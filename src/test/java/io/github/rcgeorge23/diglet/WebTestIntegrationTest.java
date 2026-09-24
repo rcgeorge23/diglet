@@ -156,13 +156,115 @@ class WebTestIntegrationTest {
             });
         });
 
-        WebTest webTest = new WebTest(port).navigateTo("/form");
-        try {
-            webTest.submitForm("f", Map.of("q", "vv"));
-        } catch (NullPointerException e) {
-            // current implementation may return null for GET forms
-        }
-        // no assertion - just ensure no unhandled exception escapes
+        new WebTest(port)
+                .navigateTo("/form")
+                .submitForm("f", Map.of("q", "vv"))
+                .assertCurrentUrlIs("http://localhost:" + port + "/result?q=vv")
+                .assertPageBodyContains("q=vv");
+    }
+
+    @Test
+    void submitFormFiresSubmitHandlerAndHonoursPreventDefault() throws Exception {
+        int port = startServer(server -> {
+            server.createContext("/form", ex -> respond(ex,
+                    "<html><body><form id='f' action='/submit' method='post' " +
+                            "onsubmit=\"document.getElementById('r').textContent='handled'; return false;\">" +
+                            "<input name='q' value='def'/><button type='submit'>Go</button></form>" +
+                            "<div id='r'></div></body></html>"));
+            server.createContext("/submit", ex -> respond(ex, "<html><body>SUBMITTED</body></html>"));
+        });
+
+        WebTest webTest = new WebTest(port, false, WebTest.Browser.HTML_UNIT)
+                .navigateTo("/form")
+                .submitForm("f", Map.of("q", "changed"));
+
+        assertThat(webTest.document().getElementById("r").text()).isEqualTo("handled");
+        assertThat(webTest.body()).doesNotContain("SUBMITTED");
+    }
+
+    @Test
+    void submitFormSupportsAjaxSubmission() throws Exception {
+        int port = startServer(server -> {
+            server.createContext("/form", ex -> respond(ex, """
+                    <html><body>
+                    <form id='f' action='/submit' method='post'>
+                        <input name='q' value='x'/>
+                        <button type='submit'>Go</button>
+                    </form>
+                    <div id='r'></div>
+                    <script>
+                        document.getElementById('f').addEventListener('submit', e => {
+                            e.preventDefault();
+                            fetch('/api', { method: 'POST', body: 'q=' + encodeURIComponent(document.querySelector('[name=q]').value) })
+                                .then(r => r.text())
+                                .then(t => { document.getElementById('r').textContent = t; });
+                        });
+                    </script>
+                    </body></html>
+                    """));
+            server.createContext("/api", ex -> {
+                String body = new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+                byte[] bytes = ("api:" + body).getBytes(StandardCharsets.UTF_8);
+                ex.getResponseHeaders().add("Content-Type", "text/plain");
+                ex.sendResponseHeaders(200, bytes.length);
+                try (OutputStream os = ex.getResponseBody()) {
+                    os.write(bytes);
+                }
+            });
+        });
+
+        new WebTest(port, false, WebTest.Browser.HTML_UNIT)
+                .navigateTo("/form")
+                .submitForm("f", Map.of("q", "hello"))
+                .waitFor(doc -> {
+                    Element el = doc.getElementById("r");
+                    return el != null && el.text().startsWith("api:");
+                })
+                .assertPageBodyContains("api:q=hello");
+    }
+
+    @Test
+    void submitFormHonoursRequiredValidation() throws Exception {
+        int port = startServer(server -> {
+            server.createContext("/form", ex -> respond(ex,
+                    "<html><body><form id='f' action='/submit' method='post'>" +
+                            "<input name='q' required/><button type='submit'>Go</button>" +
+                            "</form></body></html>"));
+            server.createContext("/submit", ex -> {
+                String body = new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+                respond(ex, "<html><body>" + body + "</body></html>");
+            });
+        });
+
+        WebTest webTest = new WebTest(port, false, WebTest.Browser.HTML_UNIT)
+                .navigateTo("/form")
+                .submitForm("f", Map.of("q", ""));
+
+        webTest.assertCurrentUrlIs("http://localhost:" + port + "/form");
+
+        webTest.submitForm("f", Map.of("q", "ok"));
+        assertThat(webTest.body()).contains("q=ok");
+    }
+
+    @Test
+    void submitFormWorksForSubmitButtonInsideHiddenDropdown() throws Exception {
+        int port = startServer(server -> {
+            server.createContext("/form", ex -> respond(ex,
+                    "<html><body><form id='f' action='/submit' method='post'>" +
+                            "<input name='q' value='x'/>" +
+                            "<ul class='dropdown-menu' style='display:none'><li>" +
+                            "<button type='submit'>Go</button></li></ul>" +
+                            "</form></body></html>"));
+            server.createContext("/submit", ex -> {
+                String body = new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+                respond(ex, "<html><body>" + body + "</body></html>");
+            });
+        });
+
+        new WebTest(port, false, WebTest.Browser.HTML_UNIT)
+                .navigateTo("/form")
+                .submitForm("f", Map.of("q", "hidden"))
+                .assertPageBodyContains("q=hidden");
     }
 
     @Test

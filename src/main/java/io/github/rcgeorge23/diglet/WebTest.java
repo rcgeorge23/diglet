@@ -346,14 +346,6 @@ public class WebTest implements AutoCloseable {
         return new WebResponse(data, request, response.getLoadTime());
     }
 
-    private static void disableClientSideValidation(HtmlForm form) {
-        for (String tagName : List.of("input", "select", "textarea")) {
-            for (DomElement element : form.getElementsByAttribute(tagName, "required", "*")) {
-                element.removeAttribute("required");
-            }
-        }
-    }
-
     public WebTest submitForm(String formId, Map<String, String> values) throws IOException, InterruptedException {
         return submitForm(formId, values, Map.of());
     }
@@ -372,8 +364,6 @@ public class WebTest implements AutoCloseable {
             if (form == null) {
                 throw new IllegalArgumentException("Form '" + selector + "' not found");
             }
-            form.setAttribute("novalidate", "novalidate");
-            disableClientSideValidation(form);
             for (Map.Entry<String, String> entry : values.entrySet()) {
                 DomElement field = form.getFirstByXPath(".//*[@name='" + entry.getKey() + "']");
                 if (field instanceof HtmlCheckBoxInput checkboxInput) {
@@ -414,21 +404,11 @@ public class WebTest implements AutoCloseable {
             if (submit == null) {
                 throw new IllegalArgumentException("Form '" + selector + "' does not contain a submit button");
             }
-            if (submit != null) {
-                DomElement dropdownMenu = submit.getEnclosingElement("ul");
-                if (dropdownMenu != null && dropdownMenu.getAttribute("class").contains("dropdown-menu")) {
-                    String existingClass = dropdownMenu.getAttribute("class");
-                    if (!existingClass.contains("show")) {
-                        dropdownMenu.setAttribute("class", existingClass + " show");
-                    }
-                    String style = dropdownMenu.getAttribute("style");
-                    dropdownMenu.setAttribute("style", (style == null || style.isBlank() ? "" : style + ";") + "display:block");
-                }
-            }
             Page page;
             if (submit instanceof SubmittableElement submittableElement) {
-                WebRequest submitRequest = form.getWebRequest(submittableElement);
-                page = htmlClient.getPage(submitRequest);
+                form.submit(submittableElement);
+                htmlClient.loadDownloadedResponses();
+                page = htmlPage.getEnclosingWindow().getEnclosedPage();
             } else {
                 page = submit.click();
             }
