@@ -46,6 +46,7 @@ import org.htmlunit.HttpMethod;
 import org.htmlunit.util.NameValuePair;
 import org.htmlunit.Page;
 import org.htmlunit.ScriptException;
+import org.htmlunit.html.DisabledElement;
 import org.htmlunit.html.HtmlElement;
 import org.htmlunit.html.HtmlFileInput;
 import org.htmlunit.html.HtmlForm;
@@ -840,12 +841,49 @@ public class WebTest implements AutoCloseable {
         return new JsValue(result);
     }
 
+    private static boolean isInteractable(DomElement element) {
+        if (element instanceof HtmlElement htmlElement && !htmlElement.isDisplayed()) {
+            return false;
+        }
+        return !(element instanceof DisabledElement disabledElement) || !disabledElement.isDisabled();
+    }
+
+    /**
+     * Clicks an element even when it is hidden or disabled, as if the click had been triggered from
+     * JavaScript. Prefer {@link #click(String)} for browser-like behaviour.
+     *
+     * @param selector CSS selector for the element to click
+     * @return this WebTest
+     */
+    public WebTest forceClick(String selector) throws IOException, InterruptedException {
+        if (browser == Browser.HTML_UNIT) {
+            waitFor(document -> document.selectFirst(selector) != null);
+            DomElement element = htmlPage.querySelector(selector);
+            if (element == null) {
+                throw new IllegalArgumentException("Element '" + selector + "' not found");
+            }
+            Page page = ((HtmlElement) element).click(false, false, false, true, true, true, false);
+            updateFromPage(page);
+            return this;
+        }
+        if (usesWebDriver()) {
+            WebElement element = webDriver.findElement(By.cssSelector(selector));
+            ((JavascriptExecutor) webDriver).executeScript("arguments[0].click();", element);
+            updateFromDriver();
+            return this;
+        }
+        throw new IllegalStateException("Unsupported browser: " + browser);
+    }
+
     public WebTest click(String selector) throws IOException, InterruptedException {
         if (browser == Browser.HTML_UNIT) {
             waitFor(doc -> doc.selectFirst(selector) != null);
             DomElement element = htmlPage.querySelector(selector);
             if (element == null) {
                 throw new IllegalArgumentException("Element '" + selector + "' not found");
+            }
+            if (!isInteractable(element)) {
+                throw new IllegalStateException("Element '" + selector + "' is not interactable (hidden or disabled)");
             }
             Page page = ((HtmlElement) element).click();
             updateFromPage(page);

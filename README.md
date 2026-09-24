@@ -50,7 +50,8 @@ Maven:
   - Submit forms while bypassing client-side validation and submit handlers (equivalent to calling
     `form.submit()` from JavaScript) using `forceSubmitForm` / `forceSubmitFormBySelector`, for
     tests that exercise server-side validation of input a browser would refuse to submit.
-  - Click links and buttons with `click`.
+  - Click links and buttons with `click`. Clicking an element that is hidden or disabled fails the
+  test like a real browser would; use `forceClick` to click such an element explicitly.
   - Set input values and trigger associated handlers with `setInputValue`.
   - Wait for asynchronous DOM changes with `waitFor`.
   - Execute JavaScript snippets with `executeScript` and access resulting DOM changes.

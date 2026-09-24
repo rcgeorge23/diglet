@@ -100,14 +100,42 @@ class WebTestIntegrationTest {
     }
 
     @Test
-    void clickHiddenElementNavigates() throws Exception {
+    void clickOnHiddenElementFails() throws Exception {
+        int port = startServer(server -> server.createContext("/page", ex -> respond(ex,
+                "<html><body><a id='hidden' href='/dest' style='display:none'>h</a></body></html>")));
+
+        assertThatThrownBy(() -> new WebTest(port).navigateTo("/page").click("#hidden"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("hidden");
+    }
+
+    @Test
+    void forceClickOnHiddenElementNavigates() throws Exception {
         int port = startServer(server -> {
             server.createContext("/page", ex -> respond(ex,
                     "<html><body><a id='hidden' href='/dest' style='display:none'>h</a></body></html>"));
             server.createContext("/dest", ex -> respond(ex, "<html><body>dest</body></html>"));
         });
 
-        new WebTest(port).navigateTo("/page").click("#hidden").assertPageBodyContains("dest");
+        new WebTest(port).navigateTo("/page").forceClick("#hidden").assertPageBodyContains("dest");
+    }
+
+    @Test
+    void clickOnDisabledElementFails() throws Exception {
+        int port = startServer(server -> server.createContext("/page", ex -> respond(ex,
+                "<html><body><button id='disabled' disabled onclick=\"document.body.textContent='clicked'\">go</button></body></html>")));
+
+        assertThatThrownBy(() -> new WebTest(port).navigateTo("/page").click("#disabled"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("disabled");
+    }
+
+    @Test
+    void forceClickOnHiddenElementRunsHandler() throws Exception {
+        int port = startServer(server -> server.createContext("/page", ex -> respond(ex,
+                "<html><body><button id='hidden' style='display:none' onclick=\"document.body.textContent='clicked'\">go</button></body></html>")));
+
+        new WebTest(port).navigateTo("/page").forceClick("#hidden").assertPageBodyContains("clicked");
     }
 
     @Test
