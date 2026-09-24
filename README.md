@@ -44,7 +44,12 @@ Maven:
   `assertRedirectEndsWith`.
 - Interact with the DOM:
   - Submit forms by id or CSS selector, including file uploads, using `submitForm` /
-    `submitFormBySelector`.
+    `submitFormBySelector`. These behave like a user submitting the form in a browser: the submit
+    event fires (so page JavaScript handlers and AJAX flows run) and the browser's constraint
+    validation is enforced.
+  - Submit forms while bypassing client-side validation and submit handlers (equivalent to calling
+    `form.submit()` from JavaScript) using `forceSubmitForm` / `forceSubmitFormBySelector`, for
+    tests that exercise server-side validation of input a browser would refuse to submit.
   - Click links and buttons with `click`.
   - Set input values and trigger associated handlers with `setInputValue`.
   - Wait for asynchronous DOM changes with `waitFor`.
@@ -62,9 +67,11 @@ Maven:
 - Support the `fetch` API (including method, headers and body options) within page JavaScript,
   enabling tests to trigger AJAX-driven UI updates.
 
-When `submitForm` is used with the HtmlUnit browser, client-side validation is disabled for the
-submitted form (the `novalidate` attribute is set and `required` attributes are ignored) so that
-server-side validation is exercised instead.
+`submitForm` and `submitFormBySelector` fire the submit event and honour constraint validation, so
+page JavaScript validation, AJAX submit handlers and `preventDefault` behave as they would in a
+browser. Use `forceSubmitForm` or `forceSubmitFormBySelector` to bypass both (as a JavaScript
+`form.submit()` call would) when a test needs to reach server-side validation of input the browser
+would normally block.
 
 ## Typical usage
 

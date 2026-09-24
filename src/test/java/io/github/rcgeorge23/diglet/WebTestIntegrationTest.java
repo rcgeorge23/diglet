@@ -247,6 +247,44 @@ class WebTestIntegrationTest {
     }
 
     @Test
+    void forceSubmitFormSubmitsEvenWhenConstraintValidationWouldBlock() throws Exception {
+        int port = startServer(server -> {
+            server.createContext("/form", ex -> respond(ex,
+                    "<html><body><form id='f' action='/submit' method='post'>" +
+                            "<input name='q' required/><button type='submit'>Go</button>" +
+                            "</form></body></html>"));
+            server.createContext("/submit", ex -> {
+                String body = new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+                respond(ex, "<html><body>" + body + "</body></html>");
+            });
+        });
+
+        WebTest webTest = new WebTest(port, false, WebTest.Browser.HTML_UNIT)
+                .navigateTo("/form")
+                .forceSubmitForm("f", Map.of("q", ""));
+
+        webTest.assertCurrentUrlIs("http://localhost:" + port + "/submit");
+        assertThat(webTest.body()).contains("q=");
+    }
+
+    @Test
+    void forceSubmitFormSkipsJavaScriptSubmitHandlers() throws Exception {
+        int port = startServer(server -> {
+            server.createContext("/form", ex -> respond(ex,
+                    "<html><body><form id='f' action='/submit' method='post' onsubmit=\"document.getElementById('r').textContent='handled';return false;\">" +
+                            "<div id='r'>initial</div><input name='q' value='force'/><button type='submit'>Go</button>" +
+                            "</form></body></html>"));
+            server.createContext("/submit", ex -> respond(ex, "<html><body>SUBMITTED</body></html>"));
+        });
+
+        WebTest webTest = new WebTest(port, false, WebTest.Browser.HTML_UNIT)
+                .navigateTo("/form")
+                .forceSubmitForm("f", Map.of("q", "force"));
+
+        assertThat(webTest.body()).contains("SUBMITTED");
+    }
+
+    @Test
     void submitFormWorksForSubmitButtonInsideHiddenDropdown() throws Exception {
         int port = startServer(server -> {
             server.createContext("/form", ex -> respond(ex,

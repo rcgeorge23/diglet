@@ -359,6 +359,55 @@ public class WebTest implements AutoCloseable {
     }
 
     public WebTest submitFormBySelector(String selector, Map<String, String> values, Map<String, Path> files) throws IOException, InterruptedException {
+        return submitFormBySelector(selector, values, files, false);
+    }
+
+    /**
+     * Fills and submits a form without firing the submit event or running the browser's
+     * constraint validation, equivalent to calling {@code form.submit()} from JavaScript.
+     *
+     * <p>Use this when a test needs to exercise server-side validation of input that a real
+     * browser would refuse to submit. Prefer {@link #submitForm} for browser-like behaviour.</p>
+     */
+    public WebTest forceSubmitForm(String formId, Map<String, String> values) throws IOException, InterruptedException {
+        return forceSubmitForm(formId, values, Map.of());
+    }
+
+    /**
+     * Fills and submits a form without firing the submit event or running the browser's
+     * constraint validation, equivalent to calling {@code form.submit()} from JavaScript.
+     *
+     * <p>Use this when a test needs to exercise server-side validation of input that a real
+     * browser would refuse to submit. Prefer {@link #submitForm} for browser-like behaviour.</p>
+     */
+    public WebTest forceSubmitForm(String formId, Map<String, String> values, Map<String, Path> files) throws IOException, InterruptedException {
+        return forceSubmitFormBySelector("#" + formId, values, files);
+    }
+
+    /**
+     * Fills and submits a form without firing the submit event or running the browser's
+     * constraint validation, equivalent to calling {@code form.submit()} from JavaScript.
+     *
+     * <p>Use this when a test needs to exercise server-side validation of input that a real
+     * browser would refuse to submit. Prefer {@link #submitFormBySelector} for browser-like behaviour.</p>
+     */
+    public WebTest forceSubmitFormBySelector(String selector, Map<String, String> values) throws IOException, InterruptedException {
+        return forceSubmitFormBySelector(selector, values, Map.of());
+    }
+
+    /**
+     * Fills and submits a form without firing the submit event or running the browser's
+     * constraint validation, equivalent to calling {@code form.submit()} from JavaScript.
+     *
+     * <p>Use this when a test needs to exercise server-side validation of input that a real
+     * browser would refuse to submit. Prefer {@link #submitFormBySelector} for browser-like behaviour.</p>
+     */
+    public WebTest forceSubmitFormBySelector(String selector, Map<String, String> values, Map<String, Path> files) throws IOException, InterruptedException {
+        return submitFormBySelector(selector, values, files, true);
+    }
+
+    private WebTest submitFormBySelector(String selector, Map<String, String> values, Map<String, Path> files, boolean force)
+            throws IOException, InterruptedException {
         if (browser == Browser.HTML_UNIT) {
             HtmlForm form = (HtmlForm) htmlPage.querySelector(selector);
             if (form == null) {
@@ -390,27 +439,33 @@ public class WebTest implements AutoCloseable {
                     fileInput.setFiles(filePath.toFile());
                 }
             }
-            HtmlElement submit = form.getFirstByXPath(
-                    ".//button[not(@type) or translate(@type, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')='submit']"
-                            + "|.//input[translate(@type, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')='submit']");
-            if (submit == null) {
-                String formId = form.getId();
-                if (formId != null && !formId.isBlank()) {
-                    String externalSubmitXpath = "//*[@form='" + formId + "' and (local-name()='button' or local-name()='input')"
-                            + " and (not(@type) or translate(@type, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')='submit')][1]";
-                    submit = htmlPage.getDocumentElement().getFirstByXPath(externalSubmitXpath);
-                }
-            }
-            if (submit == null) {
-                throw new IllegalArgumentException("Form '" + selector + "' does not contain a submit button");
-            }
             Page page;
-            if (submit instanceof SubmittableElement submittableElement) {
-                form.submit(submittableElement);
+            if (force) {
+                form.submit((SubmittableElement) null);
                 htmlClient.loadDownloadedResponses();
                 page = htmlPage.getEnclosingWindow().getEnclosedPage();
             } else {
-                page = submit.click();
+                HtmlElement submit = form.getFirstByXPath(
+                        ".//button[not(@type) or translate(@type, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')='submit']"
+                                + "|.//input[translate(@type, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')='submit']");
+                if (submit == null) {
+                    String formId = form.getId();
+                    if (formId != null && !formId.isBlank()) {
+                        String externalSubmitXpath = "//*[@form='" + formId + "' and (local-name()='button' or local-name()='input')"
+                                + " and (not(@type) or translate(@type, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')='submit')][1]";
+                        submit = htmlPage.getDocumentElement().getFirstByXPath(externalSubmitXpath);
+                    }
+                }
+                if (submit == null) {
+                    throw new IllegalArgumentException("Form '" + selector + "' does not contain a submit button");
+                }
+                if (submit instanceof SubmittableElement submittableElement) {
+                    form.submit(submittableElement);
+                    htmlClient.loadDownloadedResponses();
+                    page = htmlPage.getEnclosingWindow().getEnclosedPage();
+                } else {
+                    page = submit.click();
+                }
             }
             updateFromPage(page);
             return this;
@@ -446,7 +501,11 @@ public class WebTest implements AutoCloseable {
                 WebElement field = form.findElement(By.name(entry.getKey()));
                 field.sendKeys(entry.getValue().toString());
             }
-            form.submit();
+            if (force) {
+                ((JavascriptExecutor) webDriver).executeScript("arguments[0].submit();", form);
+            } else {
+                form.submit();
+            }
             updateFromDriver();
             return this;
         }
