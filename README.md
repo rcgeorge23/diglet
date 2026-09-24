@@ -58,6 +58,9 @@ Maven:
   - Evaluate JavaScript expressions and capture their return values with `evaluateScript`.
 - Verify page content using helpers like `assertThatPageTitleIs`, `assertPageBodyContains`,
   `assertFormFieldValue` and `assertThatElementWithIdIsPresent`.
+- Verify visible page text with `assertPageTextContains` / `assertPageTextDoesNotContain`; use the
+  raw-HTML `assertPageBodyContains` / `assertPageBodyDoesNotContain` when you need to match markup,
+  comments or script content that a user would not see.
 - Follow redirects explicitly with `followRedirect` or configure automatic redirect following when
   constructing the class.
 - Send JSON or form-encoded POST requests directly using `postJson` and `postForm`.

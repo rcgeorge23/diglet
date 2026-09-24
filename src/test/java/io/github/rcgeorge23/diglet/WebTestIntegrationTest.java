@@ -691,4 +691,48 @@ class WebTestIntegrationTest {
                 })
                 .assertPageBodyContains("done");
     }
+    @Test
+    void assertPageTextContainsMatchesOnlyVisibleText() throws Exception {
+        int port = startServer(server -> server.createContext("/page", ex -> respond(ex,
+                "<html><body><p>VISIBLE_TEXT</p>"
+                        + "<div style='display:none'>SECRET_HIDDEN</div>"
+                        + "<div data-secret='SECRET_ATTRIBUTE'></div>"
+                        + "<!-- SECRET_COMMENT -->"
+                        + "<script>var SECRET_SCRIPT = 'SECRET_SCRIPT_VALUE';</script>"
+                        + "</body></html>")));
+
+        WebTest webTest = new WebTest(port).navigateTo("/page");
+
+        webTest.assertPageTextContains("VISIBLE_TEXT");
+        assertThatThrownBy(() -> webTest.assertPageTextContains("SECRET_HIDDEN")).isInstanceOf(AssertionError.class);
+        assertThatThrownBy(() -> webTest.assertPageTextContains("SECRET_ATTRIBUTE")).isInstanceOf(AssertionError.class);
+        assertThatThrownBy(() -> webTest.assertPageTextContains("SECRET_COMMENT")).isInstanceOf(AssertionError.class);
+        assertThatThrownBy(() -> webTest.assertPageTextContains("SECRET_SCRIPT_VALUE")).isInstanceOf(AssertionError.class);
+    }
+
+    @Test
+    void assertPageTextDoesNotContainAcceptsInvisibleText() throws Exception {
+        int port = startServer(server -> server.createContext("/page", ex -> respond(ex,
+                "<html><body><p>VISIBLE_TEXT</p>"
+                        + "<div style='display:none'>SECRET_HIDDEN</div>"
+                        + "<!-- SECRET_COMMENT -->"
+                        + "<script>var SECRET_SCRIPT = 'SECRET_SCRIPT_VALUE';</script>"
+                        + "</body></html>")));
+
+        WebTest webTest = new WebTest(port).navigateTo("/page");
+
+        webTest.assertPageTextDoesNotContain("SECRET_HIDDEN")
+                .assertPageTextDoesNotContain("SECRET_COMMENT")
+                .assertPageTextDoesNotContain("SECRET_SCRIPT_VALUE");
+        assertThatThrownBy(() -> webTest.assertPageTextDoesNotContain("VISIBLE_TEXT")).isInstanceOf(AssertionError.class);
+    }
+
+    @Test
+    void assertPageBodyContainsStillMatchesRawHtml() throws Exception {
+        int port = startServer(server -> server.createContext("/page", ex -> respond(ex,
+                "<html><body><div style='display:none'>SECRET_HIDDEN</div></body></html>")));
+
+        new WebTest(port).navigateTo("/page").assertPageBodyContains("SECRET_HIDDEN");
+    }
+
 }

@@ -626,6 +626,33 @@ public class WebTest implements AutoCloseable {
         return this;
     }
 
+    public WebTest assertPageTextContains(String text) {
+        assertThat(pageText()).contains(text);
+        return this;
+    }
+
+    public WebTest assertPageTextDoesNotContain(String text) {
+        assertThat(pageText()).doesNotContain(text);
+        return this;
+    }
+
+    private String pageText() {
+        if (browser == Browser.HTML_UNIT) {
+            if (htmlPage != null) {
+                return normaliseText(htmlPage.getVisibleText());
+            }
+            return normaliseText(parseDocument(renderedHtml).text());
+        }
+        if (usesWebDriver()) {
+            return normaliseText(webDriver.findElement(By.tagName("body")).getText());
+        }
+        throw new IllegalStateException("Unsupported browser: " + browser);
+    }
+
+    private static String normaliseText(String text) {
+        return text == null ? null : text.replaceAll("\s+", " ").trim();
+    }
+
     public WebTest assertFormFieldValue(String fieldName, String expectedValue) {
         Element element = currentDocument.selectFirst("[name='" + fieldName + "']");
         assertThat(element).as("field '" + fieldName + "' exists").isNotNull();
