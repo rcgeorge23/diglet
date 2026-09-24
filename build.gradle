@@ -1,0 +1,103 @@
+plugins {
+    id 'java-library'
+    id 'maven-publish'
+    id 'signing'
+    id 'io.spring.dependency-management' version '1.1.7'
+    id 'com.gradleup.nmcp'
+}
+
+group = 'io.github.rcgeorge23'
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(25)
+    }
+    withSourcesJar()
+    withJavadocJar()
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencyManagement {
+    imports {
+        mavenBom 'org.springframework.boot:spring-boot-dependencies:4.1.1'
+    }
+}
+
+dependencies {
+    compileOnly 'org.projectlombok:lombok:1.18.48'
+    annotationProcessor 'org.projectlombok:lombok:1.18.48'
+    testCompileOnly 'org.projectlombok:lombok:1.18.48'
+    testAnnotationProcessor 'org.projectlombok:lombok:1.18.48'
+
+    api 'org.jsoup:jsoup:1.23.2'
+    api 'org.graalvm.polyglot:polyglot:25.3.4.1'
+    api 'org.graalvm.polyglot:js:25.3.4.1'
+    api 'org.springframework:spring-web'
+    api 'org.assertj:assertj-core'
+    api 'org.htmlunit:htmlunit'
+    api 'org.seleniumhq.selenium:selenium-java'
+    api 'org.slf4j:slf4j-api'
+
+    testRuntimeOnly 'org.slf4j:slf4j-simple'
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    testImplementation 'org.seleniumhq.selenium:htmlunit3-driver'
+}
+
+test {
+    useJUnitPlatform()
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            from components.java
+            versionMapping {
+                usage('java-api') {
+                    fromResolutionOf('runtimeClasspath')
+                }
+                usage('java-runtime') {
+                    fromResolutionResult()
+                }
+            }
+            pom {
+                name = 'Diglet'
+                description = 'A browser-like testing library for web applications, built on HtmlUnit, Selenium and GraalVM JavaScript.'
+                url = 'https://github.com/rcgeorge23/diglet'
+                licenses {
+                    license {
+                        name = 'The Apache License, Version 2.0'
+                        url = 'https://www.apache.org/licenses/LICENSE-2.0.txt'
+                        distribution = 'repo'
+                    }
+                }
+                developers {
+                    developer {
+                        id = 'rcgeorge23'
+                        name = 'Richard George'
+                        url = 'https://github.com/rcgeorge23'
+                    }
+                }
+                scm {
+                    connection = 'scm:git:https://github.com/rcgeorge23/diglet.git'
+                    developerConnection = 'scm:git:ssh://git@github.com/rcgeorge23/diglet.git'
+                    url = 'https://github.com/rcgeorge23/diglet'
+                }
+            }
+        }
+    }
+}
+
+signing {
+    def signingKey = System.getenv('MAVEN_SIGNING_KEY')
+    def signingPassword = System.getenv('MAVEN_SIGNING_PASSWORD')
+    required = signingKey != null
+    if (signingKey != null) {
+        useInMemoryPgpKeys(signingKey, signingPassword)
+    } else {
+        useGpgCmd()
+    }
+}
