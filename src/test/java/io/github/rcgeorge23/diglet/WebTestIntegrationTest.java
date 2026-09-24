@@ -55,21 +55,36 @@ class WebTestIntegrationTest {
     }
 
     @Test
-    void javascriptErrorDoesNotThrow() throws Exception {
+    void javascriptConsoleErrorFailsByDefault() throws Exception {
         int port = startServer(server -> server.createContext("/", ex -> respond(ex,
                 "<html><body><script>function triggerError(){console.error('boom');}</script></body></html>")));
 
         WebTest webTest = new WebTest(port).navigateTo("/");
-        webTest.executeScript("triggerError()");
+
+        assertThatThrownBy(() -> webTest.executeScript("triggerError()"))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessageContaining("boom");
     }
 
     @Test
-    void pageScriptErrorDoesNotThrow() throws Exception {
+    void javascriptConsoleErrorCanBeIgnoredAndInspected() throws Exception {
+        int port = startServer(server -> server.createContext("/", ex -> respond(ex,
+                "<html><body><script>console.error('boom')</script></body></html>")));
+
+        WebTest webTest = new WebTest(port).ignoreJavascriptErrors().navigateTo("/");
+
+        assertThat(webTest.javascriptErrors()).anyMatch(error -> error.contains("boom"));
+    }
+
+    @Test
+    void pageScriptErrorFailsByDefault() throws Exception {
         int port = startServer(server ->
                 server.createContext("/error", ex -> respond(ex,
-                        "<html><body><script>console.error('boom')</script></body></html>")));
+                        "<html><body><script>throw new Error('broken script')</script></body></html>")));
 
-        new WebTest(port).navigateTo("/error").assertPageBodyContains("boom");
+        assertThatThrownBy(() -> new WebTest(port).navigateTo("/error"))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessageContaining("broken script");
     }
 
     @Test
@@ -509,12 +524,23 @@ class WebTestIntegrationTest {
     }
 
     @Test
-    void missingEmbeddedResourceDoesNotThrow() throws Exception {
+    void missingEmbeddedResourceFailsByDefault() throws Exception {
         int port = startServer(server ->
                 server.createContext("/page", ex -> respond(ex,
                         "<html><body><script src='/missing.js'></script></body></html>")));
 
-        new WebTest(port).navigateTo("/page").assertStatusIs(HttpStatus.OK);
+        assertThatThrownBy(() -> new WebTest(port).navigateTo("/page"))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessageContaining("Error loading script");
+    }
+
+    @Test
+    void missingEmbeddedResourceCanBeIgnored() throws Exception {
+        int port = startServer(server ->
+                server.createContext("/page", ex -> respond(ex,
+                        "<html><body><script src='/missing.js'></script></body></html>")));
+
+        new WebTest(port).ignoreJavascriptErrors().navigateTo("/page").assertStatusIs(HttpStatus.OK);
     }
 
     @Test

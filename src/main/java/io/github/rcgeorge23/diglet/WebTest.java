@@ -36,6 +36,7 @@ import org.htmlunit.corejs.javascript.Undefined;
 import org.htmlunit.util.Cookie;
 
 import org.htmlunit.WebClient;
+import org.htmlunit.WebConsole;
 import org.htmlunit.WebRequest;
 import org.htmlunit.WebResponse;
 import org.htmlunit.WebResponseData;
@@ -102,6 +103,7 @@ public class WebTest implements AutoCloseable {
     private int lastStatus;
     private final Browser browser;
     private BrowserConsole console;
+    private boolean ignoreJavascriptErrors;
     private WebClient htmlClient;
     private HtmlPage htmlPage;
     private WebDriver webDriver;
@@ -265,7 +267,7 @@ public class WebTest implements AutoCloseable {
             htmlClient.setJavaScriptErrorListener(new JavaScriptErrorListener() {
                 @Override
                 public void scriptException(HtmlPage page, ScriptException scriptException) {
-                    String message = scriptException.getMessage();
+                    String message = scriptException.getMessage() == null ? scriptException.getClass().getSimpleName() : scriptException.getMessage();
                     if (!shouldIgnoreBootstrapScriptError(message)) {
                         console.getErrors().add(message);
                     }
@@ -289,8 +291,59 @@ public class WebTest implements AutoCloseable {
                 @Override
                 public void warn(String message, String sourceName, int line, String lineSource, int lineOffset) {
                     if (!shouldIgnoreBootstrapScriptError(sourceName)) {
-                        console.getErrors().add("JavaScript warning: " + message);
+                        console.getLogs().add("JavaScript warning: " + message);
                     }
+                }
+            });
+            htmlClient.getWebConsole().setLogger(new WebConsole.Logger() {
+                @Override
+                public boolean isTraceEnabled() {
+                    return true;
+                }
+
+                @Override
+                public void trace(Object message) {
+                    console.getLogs().add(String.valueOf(message));
+                }
+
+                @Override
+                public boolean isDebugEnabled() {
+                    return true;
+                }
+
+                @Override
+                public void debug(Object message) {
+                    console.getLogs().add(String.valueOf(message));
+                }
+
+                @Override
+                public boolean isInfoEnabled() {
+                    return true;
+                }
+
+                @Override
+                public void info(Object message) {
+                    console.getLogs().add(String.valueOf(message));
+                }
+
+                @Override
+                public boolean isWarnEnabled() {
+                    return true;
+                }
+
+                @Override
+                public void warn(Object message) {
+                    console.getLogs().add(String.valueOf(message));
+                }
+
+                @Override
+                public boolean isErrorEnabled() {
+                    return true;
+                }
+
+                @Override
+                public void error(Object message) {
+                    console.getErrors().add(String.valueOf(message));
                 }
             });
         } else {
@@ -730,11 +783,30 @@ public class WebTest implements AutoCloseable {
         return "\"" + escaped + "\"";
     }
 
+    /**
+     * Do not fail the test when the page raises JavaScript errors, for example scripts the
+     * HtmlUnit engine cannot parse. Errors remain available through {@link #javascriptErrors()}.
+     *
+     * @return this WebTest
+     */
+    public WebTest ignoreJavascriptErrors() {
+        this.ignoreJavascriptErrors = true;
+        return this;
+    }
+
+    /**
+     * @return the JavaScript errors collected from the current page
+     */
+    public List<String> javascriptErrors() {
+        return List.copyOf(console.getErrors());
+    }
+
     public WebTest executeScript(String script) throws IOException, InterruptedException {
         if (browser == Browser.HTML_UNIT) {
             htmlPage.executeJavaScript(script);
             renderedHtml = serialiseHtmlPage();
             currentDocument = parseDocument(renderedHtml);
+            checkForJavascriptErrors();
             return this;
         }
         if (usesWebDriver()) {
@@ -750,6 +822,7 @@ public class WebTest implements AutoCloseable {
             Object result = htmlPage.executeJavaScript(script).getJavaScriptResult();
             renderedHtml = serialiseHtmlPage();
             currentDocument = parseDocument(renderedHtml);
+            checkForJavascriptErrors();
             return normaliseJavaScriptResult(result);
         }
         if (usesWebDriver()) {
@@ -978,17 +1051,10 @@ public class WebTest implements AutoCloseable {
     }
 
     private void checkForJavascriptErrors() {
-        if (console != null && !console.getErrors().isEmpty()) {
-            if (browser == Browser.HTML_UNIT) {
-                console.getErrors().forEach(System.err::println);
-                console.clear();
-                return;
-            }
-            throw new RuntimeException("JavaScript console errors: " + String.join(", ", console.getErrors()));
+        if (console == null || console.getErrors().isEmpty() || ignoreJavascriptErrors) {
+            return;
         }
-        if (console != null) {
-            console.clear();
-        }
+        throw new RuntimeException("Page JavaScript errors: " + String.join(", ", console.getErrors()));
     }
 
     private static boolean parseBooleanFieldValue(String value) {

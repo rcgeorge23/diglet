@@ -63,7 +63,8 @@ Maven:
 - Access the raw response body with `body()` for parsing JSON or other content types.
 - Retrieve the HTTP status code of the last response using `status()`.
 - Automatically load external scripts and images referenced by the page, and fail the test if any
-  resource or script fails to load or logs to `console.error`.
+  resource or script fails to load, a script throws, or a script logs to `console.error`. Use
+  `ignoreJavascriptErrors()` to opt out and `javascriptErrors()` to inspect the collected errors.
 - Support the `fetch` API (including method, headers and body options) within page JavaScript,
   enabling tests to trigger AJAX-driven UI updates.
 
