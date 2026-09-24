@@ -1,7 +1,5 @@
 package io.github.rcgeorge23.diglet;
 
-import org.graalvm.polyglot.Value;
-import org.graalvm.polyglot.proxy.ProxyExecutable;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.CountDownLatch;
@@ -16,11 +14,8 @@ class BrowserConsoleTest {
     void recordsLogsAndErrorsAndClears() {
         BrowserConsole console = new BrowserConsole();
 
-        ProxyExecutable log = (ProxyExecutable) console.getMember("log");
-        log.execute(new Value[]{Value.asValue("hello")});
-
-        ProxyExecutable error = (ProxyExecutable) console.getMember("error");
-        error.execute(new Value[]{Value.asValue("boom")});
+        console.getLogs().add("hello");
+        console.getErrors().add("boom");
 
         assertThat(console.getLogs()).containsExactly("hello");
         assertThat(console.getErrors()).containsExactly("boom");

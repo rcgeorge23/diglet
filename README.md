@@ -6,9 +6,10 @@ applications: navigate, fill in and submit forms, follow redirects, run page Jav
 on the resulting DOM.
 
 It builds on the JDK `HttpClient`, parses HTML with [jsoup](https://jsoup.org/) and executes
-JavaScript using the GraalVM polyglot engine. For more realistic end-to-end tests, Diglet can also
-drive real browsers via Selenium by selecting `WebTest.Browser.CHROME` or
-`WebTest.Browser.FIREFOX`, or by supplying a custom `WebDriver` supplier.
+JavaScript using the in-process [HtmlUnit](https://www.htmlunit.org/) browser engine. For more
+realistic end-to-end tests, Diglet can also drive real browsers via Selenium by selecting
+`WebTest.Browser.CHROME` or `WebTest.Browser.FIREFOX`, or by supplying a custom `WebDriver`
+supplier.
 
 ## Requirements
 

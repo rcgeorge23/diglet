@@ -3,7 +3,6 @@ package io.github.rcgeorge23.diglet;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.net.CookieManager;
 import java.net.CookiePolicy;
@@ -16,24 +15,12 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.HashMap;
-import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.Collection;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 import java.util.Date;
@@ -45,14 +32,8 @@ import java.util.regex.Pattern;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
-import org.graalvm.polyglot.Context;
-import org.graalvm.polyglot.Value;
-import org.graalvm.polyglot.proxy.ProxyExecutable;
-import org.graalvm.polyglot.proxy.ProxyInstantiable;
-import org.graalvm.polyglot.proxy.ProxyObject;
+import org.htmlunit.corejs.javascript.Undefined;
 import org.htmlunit.util.Cookie;
-
-import org.graalvm.polyglot.PolyglotException;
 
 import org.htmlunit.WebClient;
 import org.htmlunit.WebRequest;
@@ -101,8 +82,6 @@ public class WebTest implements AutoCloseable {
         FIREFOX
     }
 
-    private static final AtomicBoolean POLYGLOT_CACHE_CLEARED = new AtomicBoolean();
-
     /**
      * Matches self-closing syntax for non-void HTML elements, for example {@code <select .../>}.
      * HtmlUnit serialises empty elements this way, but Jsoup treats a self-closed {@code select}
@@ -122,13 +101,10 @@ public class WebTest implements AutoCloseable {
     private WebResponse lastWebResponse;
     private int lastStatus;
     private final Browser browser;
-    private Context jsContext;
-    private BrowserWindow window;
     private BrowserConsole console;
     private WebClient htmlClient;
     private HtmlPage htmlPage;
     private WebDriver webDriver;
-    private final List<CompletableFuture<?>> asyncTasks = new CopyOnWriteArrayList<>();
     private final AtomicBoolean closed = new AtomicBoolean();
     private Document currentDocument;
     private String renderedHtml;
@@ -317,111 +293,8 @@ public class WebTest implements AutoCloseable {
                     }
                 }
             });
-            clearPolyglotEngineCache();
-            this.jsContext = Context.newBuilder("js")
-                    .allowAllAccess(true)
-                    .build();
         } else {
-            this.window = new BrowserWindow();
             this.console = new BrowserConsole();
-            clearPolyglotEngineCache();
-            this.jsContext = Context.newBuilder("js")
-                    .allowAllAccess(true)
-                    .build();
-            jsContext.getBindings("js").putMember("window", window);
-            jsContext.getBindings("js").putMember("console", console);
-            jsContext.getBindings("js").putMember("setTimeout", (ProxyExecutable) args -> {
-                Value callback = args[0];
-                long delay = args[1].asLong();
-                CompletableFuture<Void> future = CompletableFuture.runAsync(() -> {
-                    try {
-                        Thread.sleep(delay);
-                        callback.execute();
-                    } catch (Exception ignored) {
-                    }
-                });
-                asyncTasks.add(future);
-                future.whenComplete((r, e) -> asyncTasks.remove(future));
-                return null;
-            });
-            jsContext.getBindings("js").putMember("Event", (ProxyInstantiable) args -> new JsEvent(args[0].asString()));
-            jsContext.getBindings("js").putMember("KeyboardEvent", (ProxyInstantiable) args -> {
-                String type = args[0].asString();
-                String key = null;
-                if (args.length > 1 && args[1].hasMember("key")) {
-                    key = args[1].getMember("key").asString();
-                }
-                return new JsEvent(type, key);
-            });
-
-            Value promiseConstructor = jsContext.eval("js", "Promise");
-            jsContext.getBindings("js").putMember("fetch", (ProxyExecutable) args -> {
-                String target = args[0].asString();
-
-                String method = "GET";
-                Map<String, String> headers = new HashMap<>();
-                String body = null;
-
-                if (args.length > 1 && args[1] != null && !args[1].isNull()) {
-                    Value options = args[1];
-                    if (options.hasMember("method")) {
-                        method = options.getMember("method").asString();
-                    }
-                    if (options.hasMember("headers")) {
-                        Value hdrs = options.getMember("headers");
-                        for (String key : hdrs.getMemberKeys()) {
-                            headers.put(key, hdrs.getMember(key).asString());
-                        }
-                    }
-                    if (options.hasMember("body")) {
-                        body = options.getMember("body").asString();
-                    }
-                }
-
-                HttpRequest.Builder builder = HttpRequest.newBuilder()
-                        .uri(baseUri.resolve(target));
-
-                if ("GET".equalsIgnoreCase(method)) {
-                    builder.GET();
-                } else {
-                    builder.method(method.toUpperCase(), body == null ? HttpRequest.BodyPublishers.noBody() : HttpRequest.BodyPublishers.ofString(body));
-                }
-                headers.forEach(builder::header);
-
-                HttpRequest request = builder.build();
-
-                return promiseConstructor.newInstance((ProxyExecutable) promiseArgs -> {
-                    Value resolve = promiseArgs[0];
-                    Value reject = promiseArgs[1];
-                    try {
-                        HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
-                        Map<String, Object> map = new HashMap<>();
-                        map.put("ok", response.statusCode() >= 200 && response.statusCode() < 300);
-                        map.put("status", response.statusCode());
-                        map.put("json", (ProxyExecutable) a -> {
-                            Value innerPromise = promiseConstructor.newInstance((ProxyExecutable) jsonArgs -> {
-                                Value innerResolve = jsonArgs[0];
-                                innerResolve.execute(jsContext.eval("js", "JSON.parse").execute(response.body()));
-                                return null;
-                            });
-                            return innerPromise;
-                        });
-                        map.put("text", (ProxyExecutable) a -> {
-                            Value innerPromise = promiseConstructor.newInstance((ProxyExecutable) textArgs -> {
-                                Value innerResolve = textArgs[0];
-                                innerResolve.execute(response.body());
-                                return null;
-                            });
-                            return innerPromise;
-                        });
-                        resolve.execute(ProxyObject.fromMap(map));
-                    } catch (Exception e) {
-                        reject.execute(e.getMessage());
-                    }
-                    return null;
-                });
-            });
-
             if (usesWebDriver()) {
                 Supplier<WebDriver> supplier = driverSupplier != null ? driverSupplier : defaultDriverSupplier(browser);
                 this.webDriver = supplier.get();
@@ -442,30 +315,6 @@ public class WebTest implements AutoCloseable {
         }
         htmlClient.getOptions().setJavaScriptEnabled(enabled);
         return this;
-    }
-
-    private void clearPolyglotEngineCache() {
-        if (!POLYGLOT_CACHE_CLEARED.compareAndSet(false, true)) {
-            return;
-        }
-        try {
-            Path cacheDir = Path.of(System.getProperty("user.home"), ".cache", "org.graalvm.polyglot", "engine");
-            if (!Files.exists(cacheDir)) {
-                return;
-            }
-            try (var paths = Files.walk(cacheDir)) {
-                paths.sorted(Comparator.reverseOrder())
-                        .forEach(path -> {
-                            try {
-                                Files.deleteIfExists(path);
-                            } catch (IOException ex) {
-                                log.debug("Failed to delete polyglot cache path {}", path, ex);
-                            }
-                        });
-            }
-        } catch (IOException e) {
-            log.debug("Failed to clear polyglot cache", e);
-        }
     }
 
     private WebResponse injectHtmlUnitPolyfills(WebResponse response, WebRequest request) {
@@ -622,117 +471,7 @@ public class WebTest implements AutoCloseable {
             return this;
         }
 
-        Document document = currentDocument;
-        Element form = document.selectFirst(selector);
-        if (form == null) {
-            throw new IllegalArgumentException("Form '" + selector + "' not found");
-        }
-
-        Map<String, String> fieldValues = new LinkedHashMap<>();
-        for (Element element : form.select("input, textarea, select")) {
-            String name = element.attr("name");
-            if (name.isEmpty()) {
-                continue;
-            }
-            String value = "";
-            switch (element.tagName()) {
-                case "textarea" -> value = element.text();
-                case "select" -> {
-                    Element selected = element.selectFirst("option[selected]");
-                    if (selected == null) {
-                        selected = element.selectFirst("option");
-                    }
-                    if (selected != null) {
-                        value = selected.attr("value");
-                    }
-                }
-                case "input" -> {
-                    String type = element.attr("type");
-                    if ("checkbox".equalsIgnoreCase(type) || "radio".equalsIgnoreCase(type)) {
-                        if (element.hasAttr("checked")) {
-                            value = element.hasAttr("value") ? element.attr("value") : "on";
-                            fieldValues.put(name, value);
-                        } else if (!fieldValues.containsKey(name)) {
-                            fieldValues.put(name, "");
-                        }
-                        continue;
-                    } else {
-                        value = element.attr("value");
-                    }
-                }
-            }
-            fieldValues.put(name, value);
-        }
-
-        for (Map.Entry<String, String> entry : values.entrySet()) {
-            if (!fieldValues.containsKey(entry.getKey())) {
-                throw new IllegalArgumentException("Form does not contain field '" + entry.getKey() + "'");
-            }
-            fieldValues.put(entry.getKey(), entry.getValue());
-        }
-
-        // Remove empty values (e.g. unchecked checkboxes)
-        fieldValues.values().removeIf(v -> v == null || v.isEmpty());
-
-        // Validate file inputs exist in form
-        for (String fileField : files.keySet()) {
-            if (form.select("input[type=file][name=" + fileField + "]").isEmpty()) {
-                throw new IllegalArgumentException("Form does not contain file field '" + fileField + "'");
-            }
-        }
-
-        String action = form.attr("action");
-        String method = form.attr("method").toUpperCase();
-        String targetUrl = action.startsWith("http") ? action : url(action);
-        String enctype = form.attr("enctype");
-
-        HttpRequest.Builder requestBuilder;
-        if ("GET".equals(method)) {
-            String formBody = fieldValues.entrySet().stream()
-                    .map(e -> URLEncoder.encode(e.getKey(), StandardCharsets.UTF_8) + "=" + URLEncoder.encode(e.getValue(), StandardCharsets.UTF_8))
-                    .collect(Collectors.joining("&"));
-            String uri = targetUrl + (formBody.isEmpty() ? "" : "?" + formBody);
-            requestBuilder = HttpRequest.newBuilder().uri(URI.create(uri)).GET();
-        } else if ("multipart/form-data".equalsIgnoreCase(enctype)) {
-            String boundary = "----WebTestBoundary" + System.currentTimeMillis();
-            ByteArrayOutputStream body = new ByteArrayOutputStream();
-            for (Map.Entry<String, String> entry : fieldValues.entrySet()) {
-                body.write(("--" + boundary + "\r\n").getBytes(StandardCharsets.UTF_8));
-                body.write(("Content-Disposition: form-data; name=\"" + entry.getKey() + "\"\r\n\r\n").getBytes(StandardCharsets.UTF_8));
-                body.write(entry.getValue().getBytes(StandardCharsets.UTF_8));
-                body.write("\r\n".getBytes(StandardCharsets.UTF_8));
-            }
-            for (Map.Entry<String, Path> fileEntry : files.entrySet()) {
-                Path filePath = fileEntry.getValue();
-                String fileName = filePath.getFileName().toString();
-                String contentType = Files.probeContentType(filePath);
-                if (contentType == null) {
-                    contentType = "application/octet-stream";
-                }
-                byte[] fileBytes = Files.readAllBytes(filePath);
-                body.write(("--" + boundary + "\r\n").getBytes(StandardCharsets.UTF_8));
-                body.write(("Content-Disposition: form-data; name=\"" + fileEntry.getKey() + "\"; filename=\"" + fileName + "\"\r\n").getBytes(StandardCharsets.UTF_8));
-                body.write(("Content-Type: " + contentType + "\r\n\r\n").getBytes(StandardCharsets.UTF_8));
-                body.write(fileBytes);
-                body.write("\r\n".getBytes(StandardCharsets.UTF_8));
-            }
-            body.write(("--" + boundary + "--\r\n").getBytes(StandardCharsets.UTF_8));
-            requestBuilder = HttpRequest.newBuilder()
-                    .uri(URI.create(targetUrl))
-                    .header("Content-Type", "multipart/form-data; boundary=" + boundary)
-                    .POST(HttpRequest.BodyPublishers.ofByteArray(body.toByteArray()));
-        } else {
-            String formBody = fieldValues.entrySet().stream()
-                    .map(e -> URLEncoder.encode(e.getKey(), StandardCharsets.UTF_8) + "=" + URLEncoder.encode(e.getValue(), StandardCharsets.UTF_8))
-                    .collect(Collectors.joining("&"));
-            requestBuilder = HttpRequest.newBuilder()
-                    .uri(URI.create(targetUrl))
-                    .header("Content-Type", "application/x-www-form-urlencoded")
-                    .POST(HttpRequest.BodyPublishers.ofString(formBody));
-        }
-
-        send(requestBuilder.build());
-        return this;
+        throw new IllegalStateException("Unsupported browser: " + browser);
     }
 
     public WebTest assertStatusIs(HttpStatus status) {
@@ -816,16 +555,10 @@ public class WebTest implements AutoCloseable {
     }
 
     public String body() {
-        if (browser == Browser.HTML_UNIT || usesWebDriver()) {
-            if (renderedHtml == null) {
-                throw new IllegalStateException("No response available");
-            }
-            return renderedHtml;
-        }
-        if (lastResponse == null) {
+        if (renderedHtml == null) {
             throw new IllegalStateException("No response available");
         }
-        return lastResponse.body();
+        return renderedHtml;
     }
 
     public int status() {
@@ -863,7 +596,7 @@ public class WebTest implements AutoCloseable {
             syncCookiesFromWebDriverToHttpClient();
             return this;
         }
-        return get(path);
+        throw new IllegalStateException("Unsupported browser: " + browser);
     }
 
     public WebTest followRedirect() throws IOException, InterruptedException {
@@ -881,23 +614,7 @@ public class WebTest implements AutoCloseable {
         if (usesWebDriver()) {
             return this; // real browsers follow redirects automatically
         }
-        if (lastResponse == null) {
-            return this;
-        }
-        int status = lastResponse.statusCode();
-        if (status >= 300 && status < 400) {
-            String location = lastResponse.headers().firstValue("Location").orElse(null);
-            log.info("Following redirect to {}", location);
-            if (location != null) {
-                if (location.startsWith("http")) {
-                    URI uri = URI.create(location);
-                    get(uri.getPath() + (uri.getQuery() != null ? "?" + uri.getQuery() : ""));
-                } else {
-                    get(location);
-                }
-            }
-        }
-        return this;
+        throw new IllegalStateException("Unsupported browser: " + browser);
     }
 
     public WebTest postJson(String path, Map<String, ?> body) throws IOException, InterruptedException {
@@ -986,40 +703,29 @@ public class WebTest implements AutoCloseable {
             updateFromDriver();
             return this;
         }
-        try {
-            jsContext.eval("js", script);
-            checkForJavascriptErrors();
-            processNavigation();
-            waitForAsync();
-            renderedHtml = currentDocument.outerHtml();
-        } catch (PolyglotException e) {
-            throw new RuntimeException("JavaScript execution failed", e);
-        }
-        return this;
+        throw new IllegalStateException("Unsupported browser: " + browser);
     }
 
-    public Value evaluateScript(String script) throws IOException, InterruptedException {
+    public JsValue evaluateScript(String script) throws IOException, InterruptedException {
         if (browser == Browser.HTML_UNIT) {
             Object result = htmlPage.executeJavaScript(script).getJavaScriptResult();
             renderedHtml = serialiseHtmlPage();
             currentDocument = parseDocument(renderedHtml);
-            return jsContext.asValue(result);
+            return normaliseJavaScriptResult(result);
         }
         if (usesWebDriver()) {
             Object result = ((JavascriptExecutor) webDriver).executeScript("return (" + script + ");");
             updateFromDriver();
-            return jsContext.asValue(result);
+            return normaliseJavaScriptResult(result);
         }
-        try {
-            Value result = jsContext.eval("js", script);
-            checkForJavascriptErrors();
-            processNavigation();
-            waitForAsync();
-            renderedHtml = currentDocument.outerHtml();
-            return result;
-        } catch (PolyglotException e) {
-            throw new RuntimeException("JavaScript execution failed", e);
+        throw new IllegalStateException("Unsupported browser: " + browser);
+    }
+
+    private static JsValue normaliseJavaScriptResult(Object result) {
+        if (result instanceof Undefined) {
+            return new JsValue(null);
         }
+        return new JsValue(result);
     }
 
     public WebTest click(String selector) throws IOException, InterruptedException {
@@ -1039,15 +745,7 @@ public class WebTest implements AutoCloseable {
             updateFromDriver();
             return this;
         }
-        Element element = currentDocument.selectFirst(selector);
-        if (element == null) {
-            throw new IllegalArgumentException("Element '" + selector + "' not found");
-        }
-        if (isHidden(element)) {
-            throw new IllegalStateException("Element '" + selector + "' is hidden");
-        }
-        String escaped = selector.replace("\\", "\\\\").replace("\"", "\\\"");
-        return executeScript("document.querySelector(\"" + escaped + "\").click();");
+        throw new IllegalStateException("Unsupported browser: " + browser);
     }
 
     /**
@@ -1075,13 +773,7 @@ public class WebTest implements AutoCloseable {
             return this;
         }
 
-        Element element = currentDocument.selectFirst(selector);
-        if (element == null) {
-            throw new IllegalArgumentException("Element '" + selector + "' not found");
-        }
-        element.attr("value", value);
-        return executeScript("var el = document.querySelector(\"" + escapedSelector + "\"); " +
-                "el.value = \"" + escapedValue + "\"; el.dispatchEvent(new Event('input')); ");
+        throw new IllegalStateException("Unsupported browser: " + browser);
     }
 
     public WebTest waitFor(Predicate<Document> condition) throws IOException, InterruptedException {
@@ -1113,26 +805,9 @@ public class WebTest implements AutoCloseable {
             }
             if (browser == Browser.HTML_UNIT) {
                 htmlClient.waitForBackgroundJavaScript(50);
-            } else {
-                waitForAsync();
             }
         }
         throw new IllegalStateException("Condition not met within " + timeout.toMillis() + "ms");
-    }
-
-    private boolean isHidden(Element element) {
-        for (Element current = element; current != null; current = current.parent()) {
-            if (current.hasAttr("hidden") || "true".equalsIgnoreCase(current.attr("aria-hidden"))
-                    || hasHiddenStyle(current)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private boolean hasHiddenStyle(Element element) {
-        String style = element.attr("style").toLowerCase().replace(" ", "");
-        return style.contains("display:none") || style.contains("visibility:hidden");
     }
 
     protected WebTest get(String path) throws IOException, InterruptedException {
@@ -1183,16 +858,6 @@ public class WebTest implements AutoCloseable {
         }
         currentDocument = parseDocument(lastResponse.body(), responseUrl);
         renderedHtml = currentDocument.outerHtml();
-        if (!usesWebDriver()) {
-            jsContext.getBindings("js").putMember("document", new BrowserDocument(currentDocument, window, asyncTasks));
-            try {
-                executeScripts();
-                renderedHtml = currentDocument.outerHtml();
-            } catch (PolyglotException e) {
-                throw new RuntimeException("JavaScript execution failed", e);
-            }
-            verifyEmbeddedResources();
-        }
         // Set currentUrl for webdriver requests
         if (browser != Browser.HTML_UNIT && request.uri() != null) {
             currentUrl = request.uri().toString();
@@ -1273,53 +938,6 @@ public class WebTest implements AutoCloseable {
                 || mimeType.equals("application/javascript");
     }
 
-    private void executeScripts() throws IOException, InterruptedException {
-        URI base = baseUri;
-        for (Element script : currentDocument.select("script")) {
-            if (script.hasAttr("src")) {
-                String src = script.attr("src");
-                if (src == null || src.isEmpty()) {
-                    continue;
-                }
-
-                URI uri = src.startsWith("http") ? URI.create(src) : base.resolve(src);
-                if (uri.getHost() != null && !uri.getHost().equalsIgnoreCase(base.getHost())) {
-                    continue;
-                }
-
-                HttpRequest req = HttpRequest.newBuilder().uri(uri).GET().build();
-                HttpResponse<String> resp = client.send(req, HttpResponse.BodyHandlers.ofString());
-                int status = resp.statusCode();
-                if (status >= 300 && status < 400) {
-                    String location = resp.headers().firstValue("Location").orElse(null);
-                    if (location != null) {
-                        URI redirectUri = location.startsWith("http") ? URI.create(location) : base.resolve(location);
-                        resp = client.send(HttpRequest.newBuilder().uri(redirectUri).GET().build(), HttpResponse.BodyHandlers.ofString());
-                        status = resp.statusCode();
-                    }
-                }
-                assertThat(status)
-                        .withFailMessage("Failed to load script " + uri + " with status " + status)
-                        .isLessThan(400);
-
-                try {
-                    jsContext.eval("js", resp.body());
-                    checkForJavascriptErrors();
-                } catch (PolyglotException e) {
-                    // Ignore errors from executing page scripts
-                }
-            } else {
-                try {
-                    jsContext.eval("js", script.data());
-                    checkForJavascriptErrors();
-                } catch (PolyglotException e) {
-                    // Ignore errors from executing page scripts
-                }
-            }
-        }
-        processNavigation();
-    }
-
     private void checkForJavascriptErrors() {
         if (console != null && !console.getErrors().isEmpty()) {
             if (browser == Browser.HTML_UNIT) {
@@ -1331,84 +949,6 @@ public class WebTest implements AutoCloseable {
         }
         if (console != null) {
             console.clear();
-        }
-    }
-
-    private void verifyEmbeddedResources() throws IOException, InterruptedException {
-        String contentType = lastResponse.headers().firstValue("Content-Type").orElse("");
-        if (!contentType.contains("text/html")) {
-            return;
-        }
-
-        URI base = baseUri;
-        Set<String> resources = new LinkedHashSet<>();
-
-        currentDocument.select("img[src]").forEach(el -> resources.add(el.attr("src")));
-        currentDocument.select("link[rel=stylesheet][href]").forEach(el -> resources.add(el.attr("href")));
-        currentDocument.select("link[rel=icon][href]").forEach(el -> resources.add(el.attr("href")));
-        currentDocument.select("link[rel='shortcut icon'][href]").forEach(el -> resources.add(el.attr("href")));
-        currentDocument.select("iframe[src]").forEach(el -> resources.add(el.attr("src")));
-
-        for (String resource : resources) {
-            if (resource == null || resource.isEmpty() || resource.startsWith("data:") ||
-                    resource.startsWith("javascript:") || resource.startsWith("mailto:") ||
-                    resource.startsWith("#")) {
-                continue;
-            }
-
-            URI uri = resource.startsWith("http") ? URI.create(resource) : base.resolve(resource);
-            if (uri.getHost() != null && !uri.getHost().equalsIgnoreCase(base.getHost())) {
-                continue;
-            }
-
-            HttpRequest req = HttpRequest.newBuilder().uri(uri).GET().build();
-            HttpResponse<Void> resp = client.send(req, HttpResponse.BodyHandlers.discarding());
-            int status = resp.statusCode();
-            if (status >= 300 && status < 400) {
-                String location = resp.headers().firstValue("Location").orElse(null);
-                if (location != null) {
-                    URI redirectUri = location.startsWith("http") ? URI.create(location) : base.resolve(location);
-                    resp = client.send(HttpRequest.newBuilder().uri(redirectUri).GET().build(), HttpResponse.BodyHandlers.discarding());
-                    status = resp.statusCode();
-                }
-            }
-            assertThat(status)
-                    .withFailMessage("Failed to load resource " + uri + " with status " + status)
-                    .isLessThan(400);
-        }
-    }
-
-    private void waitForAsync() throws IOException, InterruptedException {
-        long end = System.currentTimeMillis() + 1000;
-        while (System.currentTimeMillis() < end) {
-            List<CompletableFuture<?>> tasks = new ArrayList<>(asyncTasks);
-            if (tasks.isEmpty()) {
-                break;
-            }
-            for (CompletableFuture<?> f : tasks) {
-                try {
-                    f.get(50, TimeUnit.MILLISECONDS);
-                } catch (ExecutionException | TimeoutException ignored) {
-                    // ignore
-                }
-            }
-            processNavigation();
-        }
-    }
-
-    private void processNavigation() throws IOException, InterruptedException {
-        if (window == null) {
-            return;
-        }
-        String href = window.location.href;
-        if (href != null && !href.isEmpty()) {
-            window.location.href = null;
-            if (href.startsWith("http")) {
-                URI uri = URI.create(href);
-                get(uri.getPath() + (uri.getQuery() != null ? "?" + uri.getQuery() : ""));
-            } else {
-                get(href);
-            }
         }
     }
 
@@ -1426,11 +966,6 @@ public class WebTest implements AutoCloseable {
             return;
         }
 
-        for (CompletableFuture<?> future : asyncTasks) {
-            future.cancel(true);
-        }
-        asyncTasks.clear();
-
         if (htmlClient != null) {
             htmlClient.close();
             htmlClient = null;
@@ -1445,16 +980,6 @@ public class WebTest implements AutoCloseable {
             webDriver = null;
         }
 
-        if (jsContext != null) {
-            try {
-                jsContext.close(true);
-            } catch (Exception ex) {
-                log.debug("Failed to close JS context", ex);
-            }
-            jsContext = null;
-        }
-
-        window = null;
         console = null;
         htmlPage = null;
         currentDocument = null;

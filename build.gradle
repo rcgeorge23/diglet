@@ -33,8 +33,6 @@ dependencies {
     testAnnotationProcessor 'org.projectlombok:lombok:1.18.48'
 
     api 'org.jsoup:jsoup:1.23.2'
-    api 'org.graalvm.polyglot:polyglot:25.3.4.1'
-    api 'org.graalvm.polyglot:js:25.3.4.1'
     api 'org.springframework:spring-web'
     api 'org.assertj:assertj-core'
     api 'org.htmlunit:htmlunit'
@@ -65,7 +63,7 @@ publishing {
             }
             pom {
                 name = 'Diglet'
-                description = 'A browser-like testing library for web applications, built on HtmlUnit, Selenium and GraalVM JavaScript.'
+                description = 'A browser-like testing library for web applications, built on HtmlUnit and Selenium.'
                 url = 'https://github.com/rcgeorge23/diglet'
                 licenses {
                     license {

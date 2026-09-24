@@ -101,8 +101,7 @@ class WebTestIntegrationTest {
                 "<html><body><script>var x=21*2;</script></body></html>")));
 
         WebTest webTest = new WebTest(port).navigateTo("/");
-        int result = webTest.evaluateScript("x").asInt();
-        assertThat(result).isEqualTo(42);
+        assertThat(webTest.evaluateScript("x").asInt()).isEqualTo(42);
     }
 
     @Test
