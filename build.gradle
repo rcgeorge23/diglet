@@ -100,4 +100,5 @@ signing {
     } else {
         useGpgCmd()
     }
+    sign publishing.publications.mavenJava
 }
