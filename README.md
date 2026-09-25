@@ -112,6 +112,71 @@ new WebTest(port)
 Refer to [`WebTestIntegrationTest`](src/test/java/io/github/rcgeorge23/diglet/WebTestIntegrationTest.java)
 for more examples.
 
+## Running the same flow in more than one browser
+
+Write the flow once and parameterise the browser, so it can run in the fast in-process
+`Browser.HTML_UNIT` mode on every commit and in a real browser (for example headless Chrome) on a
+schedule:
+
+```java
+static Stream<Browser> browsers() {
+    return Stream.of(Browser.HTML_UNIT, Browser.CHROME);
+}
+
+@ParameterizedTest
+@MethodSource("browsers")
+void userCanLogIn(Browser browser) throws Exception {
+    try (WebTest webTest = new WebTest(port, false, browser)) {
+        webTest.navigateTo("/login")
+                .submitForm("loginForm", Map.of("username", "alice", "password", "secret"))
+                .assertPageBodyContains("Welcome, alice");
+    }
+}
+```
+
+A custom `Supplier<WebDriver>` can be supplied for non-default drivers, and `WebDriverPool` reuses
+one browser process across tests.
+
+Known divergences to assert around: `target="_blank"` links replace the current page in HTML_UNIT
+mode, and `status()` is only meaningful in HTML_UNIT mode (WebDriver mode reports 200). Prefer
+assertions on page content and URLs for flows that must pass in both modes. See the diglet test
+suite (`WebTestDriverAgnosticTest`) for a worked example.
+
+## Running the same flow in more than one browser
+
+`WebTest` is driver-agnostic: the same test body can run in the fast in-process `HTML_UNIT` engine
+and in a real browser, so browser coverage can be a small scheduled subset instead of duplicated
+test code. Parameterise the test by mode and construct the `WebTest` accordingly:
+
+```java
+static Stream<String> modes() {
+    return Stream.of("html-unit", "chrome");
+}
+
+@ParameterizedTest
+@MethodSource("modes")
+void theSameFlowRunsInBothModes(String mode) {
+    WebTest webTest = "chrome".equals(mode)
+            ? new WebTest(port, false, WebTest.Browser.CHROME) // or a custom WebDriver supplier
+            : new WebTest(port, false, WebTest.Browser.HTML_UNIT);
+    try {
+        webTest.navigateTo("/form")
+                .assertThatPageTitleIs("Form Page")
+                .setInputValue("#q", "hello")
+                .click("#go")
+                .assertPageBodyContains("q=hello");
+    } finally {
+        webTest.close();
+    }
+}
+```
+
+Assertions that behave identically in both modes are content-based (`assertPageBodyContains`,
+`assertPageTextContains`), URL-based (`assertCurrentUrlIs`), title-based, and `evaluateScript`
+results. Known divergences to keep out of shared flows: `target="_blank"` links replace the current
+page in HTML_UNIT mode, and `status()` is only meaningful in HTML_UNIT mode. For long-running
+browser suites, share one browser process across tests with `WebDriverPool`.
+
 ## Building and testing
 
 ```bash
