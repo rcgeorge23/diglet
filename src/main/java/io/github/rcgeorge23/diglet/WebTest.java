@@ -16,11 +16,15 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 import java.util.Date;
@@ -32,6 +36,8 @@ import java.util.regex.Pattern;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
+import org.apache.http.cookie.ClientCookie;
+import org.apache.http.impl.cookie.BasicClientCookie;
 import org.htmlunit.corejs.javascript.Undefined;
 import org.htmlunit.util.Cookie;
 
@@ -62,6 +68,7 @@ import org.htmlunit.javascript.JavaScriptErrorListener;
 
 import org.openqa.selenium.By;
 import org.openqa.selenium.JavascriptExecutor;
+import org.openqa.selenium.Keys;
 import org.openqa.selenium.WebDriver;
 import org.openqa.selenium.WebElement;
 import org.openqa.selenium.chrome.ChromeDriver;
@@ -102,11 +109,13 @@ public class WebTest implements AutoCloseable {
     private HttpResponse<String> lastResponse;
     private WebResponse lastWebResponse;
     private int lastStatus;
+    private boolean lastStatusIsAvailable;
     private final Browser browser;
     private BrowserConsole console;
     private boolean ignoreJavascriptErrors;
     private WebClient htmlClient;
     private HtmlPage htmlPage;
+    private boolean currentDocumentIsBrowserPage;
     private WebDriver webDriver;
     private boolean pooledDriver;
     private final AtomicBoolean closed = new AtomicBoolean();
@@ -118,6 +127,103 @@ public class WebTest implements AutoCloseable {
     static boolean shouldIgnoreBootstrapScriptError(String details) {
         return details != null && details.contains("bootstrap.bundle.min");
     }
+
+    private boolean isAllowedHtmlUnitHost(String host) {
+        if (host.equalsIgnoreCase(baseUri.getHost())) {
+            return true;
+        }
+        return "localhost".equalsIgnoreCase(baseUri.getHost())
+                && host.toLowerCase(Locale.ROOT).endsWith(".localhost");
+    }
+
+    private static boolean cookiePathMatches(String cookiePath, String requestPath) {
+        if (cookiePath == null || cookiePath.isEmpty()) {
+            cookiePath = "/";
+        }
+        if (requestPath == null || requestPath.isEmpty()) {
+            requestPath = "/";
+        }
+        if (requestPath.equals(cookiePath)) {
+            return true;
+        }
+        return requestPath.startsWith(cookiePath)
+                && (cookiePath.endsWith("/") || requestPath.charAt(cookiePath.length()) == '/');
+    }
+
+    private static final class LocalhostCookieManager extends CookieManager {
+        private final Set<CookieIdentity> explicitlyDomainScopedCookies = ConcurrentHashMap.newKeySet();
+
+        private void registerExplicitDomainCookie(HttpCookie cookie) {
+            if (isLocalhostCookieDomain(cookie.getDomain())) {
+                explicitlyDomainScopedCookies.add(CookieIdentity.from(cookie));
+            }
+        }
+
+        private void unregisterExplicitDomainCookie(HttpCookie cookie) {
+            explicitlyDomainScopedCookies.remove(CookieIdentity.from(cookie));
+        }
+
+        @Override
+        public void put(URI uri, Map<String, List<String>> responseHeaders) throws IOException {
+            super.put(uri, responseHeaders);
+            responseHeaders.forEach((header, values) -> {
+                if (!"Set-Cookie".equalsIgnoreCase(header) && !"Set-Cookie2".equalsIgnoreCase(header)) {
+                    return;
+                }
+                for (String value : values) {
+                    try {
+                        HttpCookie.parse(value).forEach(this::registerExplicitDomainCookie);
+                    } catch (IllegalArgumentException ignored) {
+                        // The standard manager has already processed this header.
+                    }
+                }
+            });
+        }
+
+        @Override
+        public Map<String, List<String>> get(URI uri, Map<String, List<String>> requestHeaders) throws IOException {
+            Map<String, List<String>> headers = new HashMap<>(super.get(uri, requestHeaders));
+            String host = uri.getHost();
+            if (host == null || !host.toLowerCase(Locale.ROOT).endsWith(".localhost")) {
+                return headers;
+            }
+
+            List<String> domainCookies = getCookieStore().getCookies().stream()
+                    .filter(cookie -> explicitlyDomainScopedCookies.contains(CookieIdentity.from(cookie)))
+                    .filter(cookie -> !cookie.hasExpired())
+                    .filter(cookie -> !cookie.getSecure() || "https".equalsIgnoreCase(uri.getScheme()))
+                    .filter(cookie -> cookiePathMatches(cookie.getPath(), uri.getPath()))
+                    .map(cookie -> {
+                        HttpCookie headerCookie = new HttpCookie(cookie.getName(), cookie.getValue());
+                        headerCookie.setVersion(0);
+                        return headerCookie.toString();
+                    })
+                    .toList();
+            if (domainCookies.isEmpty()) {
+                return headers;
+            }
+
+            String existingCookies = String.join("; ", headers.getOrDefault("Cookie", List.of()));
+            String additionalCookies = String.join("; ", domainCookies);
+            headers.put("Cookie", List.of(existingCookies.isEmpty()
+                    ? additionalCookies
+                    : existingCookies + "; " + additionalCookies));
+            return headers;
+        }
+
+        private static boolean isLocalhostCookieDomain(String domain) {
+            return "localhost".equalsIgnoreCase(domain) || ".localhost".equalsIgnoreCase(domain);
+        }
+
+        private record CookieIdentity(String name, String domain, String path) {
+            private static CookieIdentity from(HttpCookie cookie) {
+                String domain = cookie.getDomain() == null ? null : cookie.getDomain().toLowerCase(Locale.ROOT);
+                String path = cookie.getPath() == null ? "/" : cookie.getPath();
+                return new CookieIdentity(cookie.getName(), domain, path);
+            }
+        }
+    }
+
     private void syncCookiesFromHtmlUnitToHttpClient() {
         if (browser != Browser.HTML_UNIT) {
             return;
@@ -125,7 +231,11 @@ public class WebTest implements AutoCloseable {
         var store = cookieManager.getCookieStore();
         for (Cookie c : htmlClient.getCookieManager().getCookies()) {
             HttpCookie hc = new HttpCookie(c.getName(), c.getValue());
-            hc.setDomain(c.getDomain());
+            if (c.toHttpClient() instanceof ClientCookie clientCookie
+                    && clientCookie.containsAttribute(ClientCookie.DOMAIN_ATTR)) {
+                hc.setDomain(c.getDomain());
+                ((LocalhostCookieManager) cookieManager).registerExplicitDomainCookie(hc);
+            }
             hc.setPath(c.getPath());
             hc.setSecure(c.isSecure());
             if (c.getExpires() != null) {
@@ -142,9 +252,23 @@ public class WebTest implements AutoCloseable {
         }
         var htmlStore = htmlClient.getCookieManager();
         htmlStore.clearCookies();
-        for (HttpCookie hc : cookieManager.getCookieStore().get(baseUri)) {
+        for (HttpCookie hc : cookieManager.getCookieStore().getCookies()) {
             Date expires = hc.getMaxAge() >= 0 ? new Date(System.currentTimeMillis() + hc.getMaxAge() * 1000) : null;
-            Cookie c = new Cookie(baseUri.getHost(), hc.getName(), hc.getValue(), hc.getPath(), expires, hc.getSecure());
+            BasicClientCookie apacheCookie = new BasicClientCookie(hc.getName(), hc.getValue());
+            apacheCookie.setDomain(hc.getDomain() != null ? hc.getDomain() : baseUri.getHost());
+            apacheCookie.setPath(hc.getPath());
+            apacheCookie.setExpiryDate(expires);
+            apacheCookie.setSecure(hc.getSecure());
+            if (hc.getDomain() != null) {
+                apacheCookie.setAttribute(ClientCookie.DOMAIN_ATTR, hc.getDomain());
+            }
+            if (hc.getPath() != null) {
+                apacheCookie.setAttribute(ClientCookie.PATH_ATTR, hc.getPath());
+            }
+            if (hc.getSecure()) {
+                apacheCookie.setAttribute(ClientCookie.SECURE_ATTR, "true");
+            }
+            Cookie c = new Cookie(apacheCookie);
             htmlStore.addCookie(c);
         }
     }
@@ -163,6 +287,7 @@ public class WebTest implements AutoCloseable {
                 long maxAge = (c.getExpiry().getTime() - System.currentTimeMillis()) / 1000;
                 hc.setMaxAge(maxAge);
             }
+            ((LocalhostCookieManager) cookieManager).unregisterExplicitDomainCookie(hc);
             store.add(baseUri, hc);
         }
     }
@@ -193,7 +318,8 @@ public class WebTest implements AutoCloseable {
         String url = webDriver.getCurrentUrl();
         currentUrl = url;
         currentDocument = parseDocument(renderedHtml, url);
-        lastStatus = 200;
+        currentDocumentIsBrowserPage = true;
+        lastStatusIsAvailable = false;
     }
 
     private Supplier<WebDriver> defaultDriverSupplier(Browser browser) {
@@ -229,7 +355,7 @@ public class WebTest implements AutoCloseable {
         this.baseUri = URI.create(baseUrl);
         this.automaticallyFollowRedirects = automaticallyFollowRedirects;
         this.browser = browser;
-        this.cookieManager = new CookieManager();
+        this.cookieManager = new LocalhostCookieManager();
         this.cookieManager.setCookiePolicy(CookiePolicy.ACCEPT_ALL);
         HttpClient.Redirect redirectPolicy = automaticallyFollowRedirects
                 ? HttpClient.Redirect.NORMAL
@@ -259,7 +385,7 @@ public class WebTest implements AutoCloseable {
                 @Override
                 public WebResponse getResponse(WebRequest request) throws IOException {
                     var url = request.getUrl();
-                    if (url.getHost() != null && !url.getHost().equalsIgnoreCase(baseUri.getHost())) {
+                    if (url.getHost() != null && !isAllowedHtmlUnitHost(url.getHost())) {
                         return new StringWebResponse("", url);
                     }
                     WebResponse response = super.getResponse(request);
@@ -580,7 +706,16 @@ public class WebTest implements AutoCloseable {
         throw new IllegalStateException("Unsupported browser: " + browser);
     }
 
+    /**
+     * Asserts the status code of the most recent HTTP response.
+     *
+     * @param status the expected HTTP status
+     * @return this WebTest
+     * @throws IllegalStateException when no HTTP response status is available for the current page,
+     *                                for example after a WebDriver navigation
+     */
     public WebTest assertStatusIs(HttpStatus status) {
+        ensureStatusIsAvailable();
         assertThat(lastStatus).isEqualTo(status.value());
         return this;
     }
@@ -666,10 +801,34 @@ public class WebTest implements AutoCloseable {
         return text == null ? null : text.replaceAll("\s+", " ").trim();
     }
 
+    /**
+     * Asserts the current value of a form field matched by its {@code name} attribute.
+     * For input elements in a browser page, this checks the live DOM {@code value} property,
+     * which may differ from the original HTML {@code value} attribute. Textareas continue to
+     * use their current serialized text content; other elements use their {@code value} attribute.
+     *
+     * @param fieldName the name attribute of the field
+     * @param expectedValue the expected field value
+     * @return this WebTest
+     */
     public WebTest assertFormFieldValue(String fieldName, String expectedValue) {
-        Element element = currentDocument.selectFirst("[name='" + fieldName + "']");
+        String selector = "[name='" + fieldName + "']";
+        Element element = currentDocument.selectFirst(selector);
         assertThat(element).as("field '" + fieldName + "' exists").isNotNull();
-        String actual = "textarea".equals(element.tagName()) ? element.text() : element.attr("value");
+        String actual;
+        if ("input".equals(element.tagName()) && currentDocumentIsBrowserPage) {
+            if (browser == Browser.HTML_UNIT && htmlPage != null) {
+                DomElement liveElement = htmlPage.querySelector(selector);
+                assertThat(liveElement).as("live field '" + fieldName + "' exists").isInstanceOf(HtmlInput.class);
+                actual = ((HtmlInput) liveElement).getValue();
+            } else if (usesWebDriver()) {
+                actual = webDriver.findElement(By.cssSelector(selector)).getDomProperty("value");
+            } else {
+                actual = element.attr("value");
+            }
+        } else {
+            actual = "textarea".equals(element.tagName()) ? element.text() : element.attr("value");
+        }
         assertThat(actual).isEqualTo(expectedValue);
         return this;
     }
@@ -694,8 +853,22 @@ public class WebTest implements AutoCloseable {
         return renderedHtml;
     }
 
+    /**
+     * Returns the status code of the most recent HTTP response.
+     *
+     * @return the HTTP status code
+     * @throws IllegalStateException when no HTTP response status is available for the current page,
+     *                                for example after a WebDriver navigation
+     */
     public int status() {
+        ensureStatusIsAvailable();
         return lastStatus;
+    }
+
+    private void ensureStatusIsAvailable() {
+        if (!lastStatusIsAvailable) {
+            throw new IllegalStateException("HTTP response status is unavailable for the current page");
+        }
     }
 
     public Optional<String> responseHeader(String name) {
@@ -765,8 +938,10 @@ public class WebTest implements AutoCloseable {
             lastResponse = client.send(request, HttpResponse.BodyHandlers.ofString());
             syncCookiesFromHttpClientToHtmlUnit();
             lastStatus = lastResponse.statusCode();
+            lastStatusIsAvailable = true;
             renderedHtml = lastResponse.body();
             currentDocument = parseDocument(renderedHtml);
+            currentDocumentIsBrowserPage = false;
             return this;
         }
         send(request);
@@ -847,6 +1022,7 @@ public class WebTest implements AutoCloseable {
             htmlPage.executeJavaScript(script);
             renderedHtml = serialiseHtmlPage();
             currentDocument = parseDocument(renderedHtml);
+            currentDocumentIsBrowserPage = true;
             checkForJavascriptErrors();
             return this;
         }
@@ -863,6 +1039,7 @@ public class WebTest implements AutoCloseable {
             Object result = htmlPage.executeJavaScript(script).getJavaScriptResult();
             renderedHtml = serialiseHtmlPage();
             currentDocument = parseDocument(renderedHtml);
+            currentDocumentIsBrowserPage = true;
             checkForJavascriptErrors();
             return normaliseJavaScriptResult(result);
         }
@@ -952,6 +1129,7 @@ public class WebTest implements AutoCloseable {
                     "if(el){el.value=\"" + escapedValue + "\"; el.dispatchEvent(new Event('input'));}");
             renderedHtml = serialiseHtmlPage();
             currentDocument = parseDocument(renderedHtml);
+            currentDocumentIsBrowserPage = true;
             checkForJavascriptErrors();
             return this;
         }
@@ -966,6 +1144,71 @@ public class WebTest implements AutoCloseable {
         throw new IllegalStateException("Unsupported browser: " + browser);
     }
 
+    /**
+     * Replaces the current text in the input or textarea matched by the selector, types the supplied
+     * text using browser keyboard events, then blurs the field to trigger commit handlers.
+     *
+     * @param selector CSS selector for the input or textarea
+     * @param text text to type
+     * @return this WebTest
+     * @throws IOException if a browser operation fails
+     * @throws InterruptedException if waiting for the element is interrupted
+     */
+    public WebTest typeInto(String selector, String text) throws IOException, InterruptedException {
+        if (browser == Browser.HTML_UNIT) {
+            waitFor(doc -> doc.selectFirst(selector) != null);
+            DomElement element = htmlPage.querySelector(selector);
+            if (element == null) {
+                throw new IllegalArgumentException("Element '" + selector + "' not found");
+            }
+            if (!isInteractable(element)) {
+                throw new IllegalStateException("Element '" + selector + "' is not interactable (hidden or disabled)");
+            }
+            if (element instanceof HtmlInput input) {
+                input.focus();
+                input.setValue("");
+                input.type(text);
+            } else if (element instanceof HtmlTextArea textarea) {
+                textarea.focus();
+                textarea.setText("");
+                textarea.type(text);
+            } else {
+                throw new IllegalArgumentException("Element '" + selector + "' is not an input or textarea");
+            }
+            element.removeFocus();
+            element.fireEvent("blur");
+            renderedHtml = serialiseHtmlPage();
+            currentDocument = parseDocument(renderedHtml);
+            currentDocumentIsBrowserPage = true;
+            checkForJavascriptErrors();
+            return this;
+        }
+        if (usesWebDriver()) {
+            WebElement element = webDriver.findElement(By.cssSelector(selector));
+            String originalValue = element.getDomProperty("value");
+            element.sendKeys(Keys.chord(Keys.CONTROL, "a"));
+            element.sendKeys(text);
+            ((JavascriptExecutor) webDriver).executeScript("""
+                    var element = arguments[0];
+                    var originalValue = arguments[1];
+                    if (element.value !== originalValue) {
+                        var changeDispatched = false;
+                        element.addEventListener('change', function() { changeDispatched = true; }, { once: true });
+                        element.addEventListener('blur', function() {
+                            if (!changeDispatched) {
+                                element.dispatchEvent(new Event('change', { bubbles: true }));
+                            }
+                        }, { once: true, capture: true });
+                    }
+                    element.blur();
+                    """, element, originalValue);
+            updateFromDriver();
+            return this;
+        }
+
+        throw new IllegalStateException("Unsupported browser: " + browser);
+    }
+
     public WebTest waitFor(Predicate<Document> condition) throws IOException, InterruptedException {
         return waitFor(condition, Duration.ofSeconds(5));
     }
@@ -973,17 +1216,9 @@ public class WebTest implements AutoCloseable {
     public WebTest waitFor(Predicate<Document> condition, Duration timeout) throws IOException, InterruptedException {
         long deadline = System.currentTimeMillis() + timeout.toMillis();
         while (System.currentTimeMillis() < deadline) {
-            if (browser == Browser.HTML_UNIT) {
-                if (htmlPage != null) {
-                    renderedHtml = serialiseHtmlPage();
-                }
-                String pageUrl = null;
-                if (htmlPage != null && htmlPage.getUrl() != null) {
-                    pageUrl = htmlPage.getUrl().toString();
-                } else if (lastWebResponse != null && lastWebResponse.getWebRequest() != null
-                        && lastWebResponse.getWebRequest().getUrl() != null) {
-                    pageUrl = lastWebResponse.getWebRequest().getUrl().toString();
-                }
+            if (browser == Browser.HTML_UNIT && currentDocumentIsBrowserPage && htmlPage != null) {
+                renderedHtml = serialiseHtmlPage();
+                String pageUrl = htmlPage.getUrl() == null ? null : htmlPage.getUrl().toString();
                 if (pageUrl != null) {
                     currentUrl = pageUrl;
                 }
@@ -994,7 +1229,11 @@ public class WebTest implements AutoCloseable {
                 return this;
             }
             if (browser == Browser.HTML_UNIT) {
-                htmlClient.waitForBackgroundJavaScript(50);
+                if (currentDocumentIsBrowserPage) {
+                    htmlClient.waitForBackgroundJavaScript(50);
+                } else {
+                    Thread.sleep(50);
+                }
             }
         }
         throw new IllegalStateException("Condition not met within " + timeout.toMillis() + "ms");
@@ -1036,6 +1275,7 @@ public class WebTest implements AutoCloseable {
         syncCookiesFromHttpClientToHtmlUnit();
         syncCookiesFromHttpClientToWebDriver();
         lastStatus = lastResponse.statusCode();
+        lastStatusIsAvailable = true;
         URI responseUri = lastResponse.uri();
         String responseUrl = null;
         if (responseUri != null) {
@@ -1047,6 +1287,7 @@ public class WebTest implements AutoCloseable {
             currentUrl = responseUrl;
         }
         currentDocument = parseDocument(lastResponse.body(), responseUrl);
+        currentDocumentIsBrowserPage = false;
         renderedHtml = currentDocument.outerHtml();
         // Set currentUrl for webdriver requests
         if (browser != Browser.HTML_UNIT && request.uri() != null) {
@@ -1087,9 +1328,11 @@ public class WebTest implements AutoCloseable {
 
     private void updateFromPage(Page page) {
         this.htmlPage = page instanceof HtmlPage ? (HtmlPage) page : null;
+        currentDocumentIsBrowserPage = htmlPage != null;
         this.lastWebResponse = page.getWebResponse();
         this.lastResponse = null;
         this.lastStatus = lastWebResponse.getStatusCode();
+        lastStatusIsAvailable = true;
         if (htmlPage != null) {
             renderedHtml = serialiseHtmlPage();
         } else {
@@ -1167,6 +1410,7 @@ public class WebTest implements AutoCloseable {
 
         console = null;
         htmlPage = null;
+        currentDocumentIsBrowserPage = false;
         currentDocument = null;
         renderedHtml = null;
         currentUrl = null;

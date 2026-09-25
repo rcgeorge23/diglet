@@ -15,6 +15,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class WebTestWebDriverTest {
 
@@ -35,10 +36,35 @@ class WebTestWebDriverTest {
         Supplier<WebDriver> supplier = () -> driver;
 
         try {
-            new WebTest(port, false, WebTest.Browser.CHROME, supplier)
-                    .navigateTo("/")
-                    .assertStatusIs(HttpStatus.OK)
-                    .assertPageBodyContains("Hello");
+            WebTest webTest = new WebTest(port, false, WebTest.Browser.CHROME, supplier)
+                    .navigateTo("/");
+            webTest.assertPageBodyContains("Hello");
+            assertThatThrownBy(webTest::status)
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessage("HTTP response status is unavailable for the current page");
+            assertThatThrownBy(() -> webTest.assertStatusIs(HttpStatus.OK))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessage("HTTP response status is unavailable for the current page");
+        } finally {
+            driver.quit();
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void directHttpStatusRemainsAvailableInWebDriverMode() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        server.createContext("/missing", exchange -> respond(exchange, "not found", 404));
+        server.start();
+        int port = server.getAddress().getPort();
+        HtmlUnitDriver driver = new HtmlUnitDriver(true);
+
+        try {
+            WebTest webTest = new WebTest(port, false, WebTest.Browser.CHROME, () -> driver)
+                    .postJson("/missing", Map.of());
+
+            assertThat(webTest.status()).isEqualTo(404);
+            webTest.assertStatusIs(HttpStatus.NOT_FOUND);
         } finally {
             driver.quit();
             server.stop(0);
@@ -158,9 +184,13 @@ class WebTestWebDriverTest {
     }
 
     private static void respond(com.sun.net.httpserver.HttpExchange exchange, String body) throws IOException {
+        respond(exchange, body, 200);
+    }
+
+    private static void respond(com.sun.net.httpserver.HttpExchange exchange, String body, int status) throws IOException {
         byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
         exchange.getResponseHeaders().set("Content-Type", "text/html");
-        exchange.sendResponseHeaders(200, bytes.length);
+        exchange.sendResponseHeaders(status, bytes.length);
         try (OutputStream outputStream = exchange.getResponseBody()) {
             outputStream.write(bytes);
         }

@@ -16,6 +16,9 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import org.jsoup.nodes.Element;
 
 import static org.assertj.core.api.Assertions.*;
@@ -54,6 +57,15 @@ class WebTestIntegrationTest {
         }
     }
 
+    private static void assertCookieHeaderContains(String cookieHeader, String name, String value) {
+        assertThat(cookieHeader).isNotNull();
+        assertThat(cookieHeader.replace("\"", "")).contains(name + "=" + value);
+    }
+
+    private static void assertCookieHeaderDoesNotContain(String cookieHeader, String name, String value) {
+        assertThat(Objects.toString(cookieHeader, "").replace("\"", "")).doesNotContain(name + "=" + value);
+    }
+
     @Test
     void javascriptConsoleErrorFailsByDefault() throws Exception {
         int port = startServer(server -> server.createContext("/", ex -> respond(ex,
@@ -85,6 +97,94 @@ class WebTestIntegrationTest {
         assertThatThrownBy(() -> new WebTest(port).navigateTo("/error"))
                 .isInstanceOf(RuntimeException.class)
                 .hasMessageContaining("broken script");
+    }
+
+    @Test
+    void pathScopedCookiesRoundTripBetweenHtmlUnitAndHttpClient() throws Exception {
+        AtomicReference<String> httpClientAppCookie = new AtomicReference<>();
+        AtomicReference<String> htmlUnitAppCookie = new AtomicReference<>();
+        AtomicReference<String> httpClientOtherPathCookie = new AtomicReference<>();
+        AtomicReference<String> htmlUnitAppCookieAfterOtherPath = new AtomicReference<>();
+        AtomicReference<String> htmlUnitOtherPathCookie = new AtomicReference<>();
+        AtomicInteger otherPathRequests = new AtomicInteger();
+        int port = startServer(server -> {
+            server.createContext("/app/set-cookie", ex -> {
+                ex.getResponseHeaders().add("Set-Cookie", "path-cookie=app; Path=/app");
+                respond(ex, "cookie set");
+            });
+            server.createContext("/app/http-echo", ex -> {
+                httpClientAppCookie.set(ex.getRequestHeaders().getFirst("Cookie"));
+                respond(ex, "app");
+            });
+            server.createContext("/app/echo", ex -> {
+                htmlUnitAppCookie.set(ex.getRequestHeaders().getFirst("Cookie"));
+                respond(ex, "app");
+            });
+            server.createContext("/other/echo", ex -> {
+                if (otherPathRequests.getAndIncrement() == 0) {
+                    httpClientOtherPathCookie.set(ex.getRequestHeaders().getFirst("Cookie"));
+                } else {
+                    htmlUnitOtherPathCookie.set(ex.getRequestHeaders().getFirst("Cookie"));
+                }
+                respond(ex, "other");
+            });
+        });
+
+        WebTest webTest = new WebTest(port).navigateTo("/app/set-cookie");
+
+        webTest.getBytes("/app/http-echo");
+        assertCookieHeaderContains(httpClientAppCookie.get(), "path-cookie", "app");
+        webTest.navigateTo("/app/echo");
+        assertCookieHeaderContains(htmlUnitAppCookie.get(), "path-cookie", "app");
+
+        webTest.getBytes("/other/echo");
+        assertCookieHeaderDoesNotContain(httpClientOtherPathCookie.get(), "path-cookie", "app");
+        webTest.navigateTo("/other/echo");
+        assertCookieHeaderDoesNotContain(htmlUnitOtherPathCookie.get(), "path-cookie", "app");
+        webTest.navigateTo("/app/echo");
+        htmlUnitAppCookieAfterOtherPath.set(htmlUnitAppCookie.get());
+        assertCookieHeaderContains(htmlUnitAppCookieAfterOtherPath.get(), "path-cookie", "app");
+    }
+
+    @Test
+    void domainScopedCookiesRoundTripToLocalSubdomains() throws Exception {
+        AtomicReference<String> httpClientCookie = new AtomicReference<>();
+        AtomicReference<String> htmlUnitCookie = new AtomicReference<>();
+        AtomicInteger subdomainRequests = new AtomicInteger();
+        int port = startServer(server -> {
+            server.createContext("/domain/set-cookie", ex -> {
+                ex.getResponseHeaders().add("Set-Cookie", "domain-cookie=localhost; Domain=localhost; Path=/");
+                ex.getResponseHeaders().add("Set-Cookie", "host-only-cookie=localhost; Path=/");
+                respond(ex, "cookie set");
+            });
+            server.createContext("/domain/echo", ex -> {
+                if ("sub.localhost".equalsIgnoreCase(ex.getRequestHeaders().getFirst("Host").split(":")[0])) {
+                    if (subdomainRequests.getAndIncrement() == 0) {
+                        httpClientCookie.set(ex.getRequestHeaders().getFirst("Cookie"));
+                        ex.getResponseHeaders().add("Set-Cookie", "response-domain-cookie=from-http; Domain=localhost; Path=/");
+                        ex.getResponseHeaders().add("Set-Cookie", "response-host-only-cookie=from-http; Path=/");
+                    } else {
+                        htmlUnitCookie.set(ex.getRequestHeaders().getFirst("Cookie"));
+                    }
+                }
+                respond(ex, "domain");
+            });
+        });
+        String subdomainUrl = "http://sub.localhost:" + port + "/domain/echo";
+        WebTest webTest = new WebTest(port).navigateTo("/domain/set-cookie");
+        assertThat(webTest.evaluateScript("document.cookie").asString())
+                .contains("domain-cookie=localhost", "host-only-cookie=localhost");
+
+        webTest.getBytes(subdomainUrl);
+        webTest.navigateTo(subdomainUrl);
+
+        assertCookieHeaderContains(httpClientCookie.get(), "domain-cookie", "localhost");
+        assertCookieHeaderContains(htmlUnitCookie.get(), "domain-cookie", "localhost");
+        assertCookieHeaderDoesNotContain(httpClientCookie.get(), "response-domain-cookie", "from-http");
+        assertCookieHeaderContains(htmlUnitCookie.get(), "response-domain-cookie", "from-http");
+        assertCookieHeaderDoesNotContain(httpClientCookie.get(), "host-only-cookie", "localhost");
+        assertCookieHeaderDoesNotContain(htmlUnitCookie.get(), "host-only-cookie", "localhost");
+        assertCookieHeaderContains(htmlUnitCookie.get(), "response-host-only-cookie", "from-http");
     }
 
     @Test

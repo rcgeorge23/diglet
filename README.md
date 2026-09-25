@@ -56,12 +56,16 @@ Maven:
     tests that exercise server-side validation of input a browser would refuse to submit.
   - Click links and buttons with `click`. Clicking an element that is hidden or disabled fails the
   test like a real browser would; use `forceClick` to click such an element explicitly.
-  - Set input values and trigger associated handlers with `setInputValue`.
+  - Set input values and trigger the `input` event with `setInputValue`, or replace text using
+    browser keyboard events and trigger commit handlers with `typeInto`.
   - Wait for asynchronous DOM changes with `waitFor`.
   - Execute JavaScript snippets with `executeScript` and access resulting DOM changes.
   - Evaluate JavaScript expressions and capture their return values with `evaluateScript`.
 - Verify page content using helpers like `assertThatPageTitleIs`, `assertPageBodyContains`,
   `assertFormFieldValue` and `assertThatElementWithIdIsPresent`.
+- `assertFormFieldValue` checks the live value property for inputs in a browser page, so it sees
+  values changed by `setInputValue` or JavaScript even when the original HTML `value` attribute is
+  unchanged. Textareas continue to use their serialized text content.
 - Verify visible page text with `assertPageTextContains` / `assertPageTextDoesNotContain`; use the
   raw-HTML `assertPageBodyContains` / `assertPageBodyDoesNotContain` when you need to match markup,
   comments or script content that a user would not see.
