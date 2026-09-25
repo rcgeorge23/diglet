@@ -735,4 +735,49 @@ class WebTestIntegrationTest {
         new WebTest(port).navigateTo("/page").assertPageBodyContains("SECRET_HIDDEN");
     }
 
+    @Test
+    void queueMicrotaskShimRunsCallback() throws Exception {
+        int port = startServer(server -> server.createContext("/page", ex -> respond(ex,
+                "<html><head></head><body><div id='m'>none</div></body></html>")));
+
+        WebTest webTest = new WebTest(port).navigateTo("/page");
+        webTest.evaluateScript("queueMicrotask(function(){document.getElementById('m').textContent='ran';});");
+
+        webTest.waitFor(document -> "ran".equals(document.getElementById("m").text()));
+    }
+
+    @Test
+    void structuredCloneShimClonesValues() throws Exception {
+        int port = startServer(server -> server.createContext("/page", ex -> respond(ex,
+                "<html><head></head><body></body></html>")));
+
+        WebTest webTest = new WebTest(port).navigateTo("/page");
+
+        assertThat(webTest.evaluateScript("structuredClone({a: 1, b: {c: 2}}).b.c").asInt()).isEqualTo(2);
+    }
+
+    @Test
+    void requestIdleCallbackShimRunsCallback() throws Exception {
+        int port = startServer(server -> server.createContext("/page", ex -> respond(ex,
+                "<html><head></head><body><div id='m'>none</div></body></html>")));
+
+        WebTest webTest = new WebTest(port).navigateTo("/page");
+        webTest.evaluateScript("requestIdleCallback(function(){document.getElementById('m').textContent='idle';});");
+
+        webTest.waitFor(document -> "idle".equals(document.getElementById("m").text()));
+    }
+
+    @Test
+    void resizeObserverShimCanObserve() throws Exception {
+        int port = startServer(server -> server.createContext("/page", ex -> respond(ex,
+                "<html><head></head><body></body></html>")));
+
+        WebTest webTest = new WebTest(port).navigateTo("/page");
+
+        assertThat(webTest.evaluateScript("typeof ResizeObserver").asString()).isEqualTo("function");
+        assertThat(webTest.evaluateScript(
+                "var o = new ResizeObserver(function(){}); o.observe(document.body); o.unobserve(document.body); o.disconnect(); 'ok'").asString())
+                .isEqualTo("ok");
+    }
+
 }

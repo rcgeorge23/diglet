@@ -388,8 +388,14 @@ public class WebTest implements AutoCloseable {
             return response;
         }
 
-        String symbolPolyfill = "<script>if(typeof Symbol==='undefined'){window.Symbol=function Symbol(description){return '@@symbol:' + (description||'') + ':' + Math.random().toString(36).slice(2);};window.Symbol.iterator='@@iterator';}</script>";
-        String updatedContent = content.substring(0, headIndex + headTag.length()) + symbolPolyfill + content.substring(headIndex + headTag.length());
+        String polyfills = "<script>"
+                + "if(typeof Symbol==='undefined'){window.Symbol=function Symbol(description){return '@@symbol:' + (description||'') + ':' + Math.random().toString(36).slice(2);};window.Symbol.iterator='@@iterator';}"
+                + "if(typeof queueMicrotask==='undefined'){window.queueMicrotask=function queueMicrotask(callback){Promise.resolve().then(callback);};}"
+                + "if(typeof structuredClone==='undefined'){window.structuredClone=function structuredClone(value){return value===undefined?undefined:JSON.parse(JSON.stringify(value));};}"
+                + "if(typeof requestIdleCallback==='undefined'){window.requestIdleCallback=function requestIdleCallback(callback){return window.setTimeout(function(){callback({didTimeout:false,timeRemaining:function timeRemaining(){return 0;}});},1);};window.cancelIdleCallback=function cancelIdleCallback(handle){window.clearTimeout(handle);};}"
+                + "if(typeof ResizeObserver==='undefined'){window.ResizeObserver=function ResizeObserver(callback){this.observe=function(){};this.unobserve=function(){};this.disconnect=function(){};};}"
+                + "</script>";
+        String updatedContent = content.substring(0, headIndex + headTag.length()) + polyfills + content.substring(headIndex + headTag.length());
         byte[] updatedBytes = updatedContent.getBytes(StandardCharsets.UTF_8);
 
         WebResponseData data = new WebResponseData(

@@ -69,6 +69,9 @@ Maven:
 - Automatically load external scripts and images referenced by the page, and fail the test if any
   resource or script fails to load, a script throws, or a script logs to `console.error`. Use
   `ignoreJavascriptErrors()` to opt out and `javascriptErrors()` to inspect the collected errors.
+- Fill common Web API gaps in HtmlUnit mode with built-in shims (`queueMicrotask`, `structuredClone`,
+  `requestIdleCallback`/`cancelIdleCallback`, `ResizeObserver` and the `Symbol` polyfill) so more
+  modern page scripts run without a real browser.
 - Support the `fetch` API (including method, headers and body options) within page JavaScript,
   enabling tests to trigger AJAX-driven UI updates.
 
