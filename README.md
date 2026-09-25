@@ -40,6 +40,10 @@ Maven:
 - Navigate to pages and inspect the response with `navigateTo`.
 - Drive headless Chrome or Firefox via Selenium by selecting `WebTest.Browser.CHROME` or
   `WebTest.Browser.FIREFOX`.
+- Reuse one browser process across tests with `WebDriverPool`, which clears cookies and web storage
+  between uses so real-browser suites stay fast and isolated.
+- Reuse one browser process across tests with `WebDriverPool` to avoid per-test browser startup;
+  cookies and web storage are cleared between tests.
 - Assert status codes and redirects via methods such as `assertStatusIs`, `assertRedirectIs` and
   `assertRedirectEndsWith`.
 - Interact with the DOM:

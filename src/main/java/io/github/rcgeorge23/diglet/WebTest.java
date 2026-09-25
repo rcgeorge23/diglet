@@ -108,6 +108,7 @@ public class WebTest implements AutoCloseable {
     private WebClient htmlClient;
     private HtmlPage htmlPage;
     private WebDriver webDriver;
+    private boolean pooledDriver;
     private final AtomicBoolean closed = new AtomicBoolean();
     private Document currentDocument;
     private String renderedHtml;
@@ -351,7 +352,13 @@ public class WebTest implements AutoCloseable {
             this.console = new BrowserConsole();
             if (usesWebDriver()) {
                 Supplier<WebDriver> supplier = driverSupplier != null ? driverSupplier : defaultDriverSupplier(browser);
-                this.webDriver = supplier.get();
+                if (supplier instanceof WebDriverPool pool) {
+                    this.pooledDriver = true;
+                    this.webDriver = pool.get();
+                    pool.reset();
+                } else {
+                    this.webDriver = supplier.get();
+                }
             }
         }
     }
@@ -1148,10 +1155,12 @@ public class WebTest implements AutoCloseable {
         }
 
         if (webDriver != null) {
-            try {
-                webDriver.quit();
-            } catch (Exception ex) {
-                log.debug("Failed to quit web driver", ex);
+            if (!pooledDriver) {
+                try {
+                    webDriver.quit();
+                } catch (Exception ex) {
+                    log.debug("Failed to quit web driver", ex);
+                }
             }
             webDriver = null;
         }

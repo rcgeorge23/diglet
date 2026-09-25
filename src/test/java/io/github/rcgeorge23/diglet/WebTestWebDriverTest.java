@@ -1,6 +1,7 @@
 package io.github.rcgeorge23.diglet;
 
 import com.sun.net.httpserver.HttpServer;
+import java.io.IOException;
 import org.junit.jupiter.api.Test;
 import org.openqa.selenium.WebDriver;
 import org.openqa.selenium.htmlunit.HtmlUnitDriver;
@@ -10,6 +11,7 @@ import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -77,6 +79,90 @@ class WebTestWebDriverTest {
         } finally {
             driver.quit();
             server.stop(0);
+        }
+    }
+
+    @Test
+    void pooledDriverIsReusedAcrossWebTests() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        server.createContext("/", exchange -> respond(exchange, "<html><body>Hello</body></html>"));
+        server.start();
+        int port = server.getAddress().getPort();
+        AtomicInteger created = new AtomicInteger();
+
+        try (WebDriverPool pool = new WebDriverPool(() -> {
+            created.incrementAndGet();
+            return new HtmlUnitDriver(true);
+        })) {
+            new WebTest(port, false, WebTest.Browser.CHROME, pool).navigateTo("/").assertPageBodyContains("Hello");
+            new WebTest(port, false, WebTest.Browser.CHROME, pool).navigateTo("/").assertPageBodyContains("Hello");
+
+            assertThat(created).hasValue(1);
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void pooledDriverClearsCookiesBetweenWebTests() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        server.createContext("/set-cookie", exchange -> {
+            exchange.getResponseHeaders().add("Set-Cookie", "session=abc; Path=/");
+            respond(exchange, "<html><body>cookie set</body></html>");
+        });
+        server.createContext("/", exchange -> respond(exchange, "<html><body>Hello</body></html>"));
+        server.start();
+        int port = server.getAddress().getPort();
+
+        try (WebDriverPool pool = new WebDriverPool(() -> new HtmlUnitDriver(true))) {
+            new WebTest(port, false, WebTest.Browser.CHROME, pool).navigateTo("/set-cookie");
+            WebTest second = new WebTest(port, false, WebTest.Browser.CHROME, pool).navigateTo("/");
+
+            assertThat(second.evaluateScript("document.cookie").asString()).doesNotContain("session=abc");
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void pooledDriverClearsLocalStorageBetweenWebTests() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        server.createContext("/", exchange -> respond(exchange, "<html><body>Hello</body></html>"));
+        server.start();
+        int port = server.getAddress().getPort();
+
+        try (WebDriverPool pool = new WebDriverPool(() -> new HtmlUnitDriver(true))) {
+            new WebTest(port, false, WebTest.Browser.CHROME, pool).navigateTo("/")
+                    .executeScript("localStorage.setItem('k', 'v')");
+            WebTest second = new WebTest(port, false, WebTest.Browser.CHROME, pool).navigateTo("/");
+
+            assertThat(second.evaluateScript("String(localStorage.getItem('k'))").asString()).isEqualTo("null");
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void pooledDriverSurvivesWebTestClose() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        server.createContext("/", exchange -> respond(exchange, "<html><body>Hello</body></html>"));
+        server.start();
+        int port = server.getAddress().getPort();
+
+        try (WebDriverPool pool = new WebDriverPool(() -> new HtmlUnitDriver(true))) {
+            new WebTest(port, false, WebTest.Browser.CHROME, pool).navigateTo("/").close();
+            new WebTest(port, false, WebTest.Browser.CHROME, pool).navigateTo("/").assertPageBodyContains("Hello");
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    private static void respond(com.sun.net.httpserver.HttpExchange exchange, String body) throws IOException {
+        byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+        exchange.getResponseHeaders().set("Content-Type", "text/html");
+        exchange.sendResponseHeaders(200, bytes.length);
+        try (OutputStream outputStream = exchange.getResponseBody()) {
+            outputStream.write(bytes);
         }
     }
 }
