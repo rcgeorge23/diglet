@@ -53,6 +53,13 @@ public final class JsValue {
         return (Boolean) value;
     }
 
+    /**
+     * Returns the normalized Java value: {@link Double}, {@link Boolean}, {@link String}, or
+     * {@code null} for primitives, and recursively converted {@code List<Object>} or
+     * {@code Map<String, Object>} values for JavaScript arrays and plain objects.
+     *
+     * @return the Java representation of this JavaScript value
+     */
     public Object asObject() {
         return value;
     }

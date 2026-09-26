@@ -4,6 +4,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 
 import java.io.IOException;
+import java.lang.reflect.Array;
 import java.net.CookieManager;
 import java.net.CookiePolicy;
 import java.net.HttpCookie;
@@ -19,6 +20,8 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -47,6 +50,7 @@ import org.htmlunit.WebRequest;
 import org.htmlunit.WebResponse;
 import org.htmlunit.WebResponseData;
 import org.htmlunit.StringWebResponse;
+import org.htmlunit.WebWindow;
 import org.htmlunit.util.WebConnectionWrapper;
 import org.htmlunit.HttpMethod;
 import org.htmlunit.util.NameValuePair;
@@ -67,8 +71,11 @@ import org.htmlunit.html.SubmittableElement;
 import org.htmlunit.javascript.JavaScriptErrorListener;
 
 import org.openqa.selenium.By;
+import org.openqa.selenium.Alert;
 import org.openqa.selenium.JavascriptExecutor;
 import org.openqa.selenium.Keys;
+import org.openqa.selenium.NoAlertPresentException;
+import org.openqa.selenium.UnhandledAlertException;
 import org.openqa.selenium.WebDriver;
 import org.openqa.selenium.WebElement;
 import org.openqa.selenium.chrome.ChromeDriver;
@@ -91,6 +98,100 @@ public class WebTest implements AutoCloseable {
         FIREFOX
     }
 
+    private enum DialogType {
+        ALERT("alert"),
+        CONFIRM("confirm"),
+        PROMPT("prompt");
+
+        private final String displayName;
+
+        DialogType(String displayName) {
+            this.displayName = displayName;
+        }
+    }
+
+    private enum DialogAction {
+        ACCEPT,
+        DISMISS
+    }
+
+    /**
+     * A one-shot expectation for the next JavaScript dialog. Configure the action before triggering
+     * the dialog, then inspect its text afterward.
+     */
+    public static final class DialogExpectation {
+        private final WebTest owner;
+        private final DialogType type;
+        private DialogAction action = DialogAction.ACCEPT;
+        private String promptResponse;
+        private String text;
+        private boolean triggered;
+
+        private DialogExpectation(WebTest owner, DialogType type) {
+            this.owner = owner;
+            this.type = type;
+        }
+
+        /**
+         * Accept the expected dialog. This is the default action.
+         *
+         * @return this expectation
+         */
+        public DialogExpectation accept() {
+            ensurePending();
+            action = DialogAction.ACCEPT;
+            return this;
+        }
+
+        /**
+         * Dismiss the expected confirm or prompt dialog.
+         *
+         * @return this expectation
+         */
+        public DialogExpectation dismiss() {
+            ensurePending();
+            if (type == DialogType.ALERT) {
+                throw new IllegalStateException("An alert dialog can only be accepted");
+            }
+            action = DialogAction.DISMISS;
+            return this;
+        }
+
+        /**
+         * Supply the response for an expected prompt and accept it.
+         *
+         * @param value the text to send to the prompt
+         * @return this expectation
+         */
+        public DialogExpectation sendKeys(String value) {
+            ensurePending();
+            if (type != DialogType.PROMPT) {
+                throw new IllegalStateException("sendKeys is only available for a prompt dialog");
+            }
+            promptResponse = java.util.Objects.requireNonNull(value, "value");
+            action = DialogAction.ACCEPT;
+            return this;
+        }
+
+        /**
+         * Return the dialog message after the expected dialog has appeared.
+         *
+         * @return the captured dialog message
+         */
+        public String getText() {
+            if (!triggered) {
+                throw new IllegalStateException("The expected dialog has not appeared yet");
+            }
+            return text;
+        }
+
+        private void ensurePending() {
+            if (triggered || owner.pendingDialogExpectation != this) {
+                throw new IllegalStateException("The dialog expectation is no longer pending");
+            }
+        }
+    }
+
     /**
      * Matches self-closing syntax for non-void HTML elements, for example {@code <select .../>}.
      * HtmlUnit serialises empty elements this way, but Jsoup treats a self-closed {@code select}
@@ -100,6 +201,10 @@ public class WebTest implements AutoCloseable {
     private static final Pattern NON_VOID_SELF_CLOSING_ELEMENT = Pattern.compile(
             "<(?!area\\b|base\\b|br\\b|col\\b|embed\\b|hr\\b|img\\b|input\\b|link\\b|meta\\b|param\\b|source\\b|track\\b|wbr\\b)"
                     + "([a-zA-Z][a-zA-Z0-9]*)((?:[^>\"']|\"[^\"]*\"|'[^']*')*)/>");
+    private static final Pattern JAVASCRIPT_CLASS_SYNTAX = Pattern.compile(
+            "\\bclass\\s*(?:[A-Za-z_$][A-Za-z0-9_$]*\\s*)?(?:extends\\s+[^\\{]+)?\\{");
+    private static final Pattern JAVASCRIPT_ASYNC_SYNTAX = Pattern.compile(
+            "\\basync\\s+function\\b|\\basync\\s*(?:\\([^)]*\\)|[A-Za-z_$][A-Za-z0-9_$]*)\\s*=>|\\bawait\\s+");
 
     private final String baseUrl;
     private final URI baseUri;
@@ -122,6 +227,8 @@ public class WebTest implements AutoCloseable {
     private Document currentDocument;
     private String renderedHtml;
     private String currentUrl;
+    private DialogExpectation pendingDialogExpectation;
+    private IllegalStateException pendingHtmlUnitDialogFailure;
 
 
     static boolean shouldIgnoreBootstrapScriptError(String details) {
@@ -313,7 +420,127 @@ public class WebTest implements AutoCloseable {
         return browser == Browser.CHROME || browser == Browser.FIREFOX;
     }
 
+    /**
+     * Expect the next JavaScript alert. Alerts are accepted by default.
+     *
+     * @return an expectation whose text can be inspected after the action
+     */
+    public DialogExpectation expectAlert() {
+        return expectDialog(DialogType.ALERT);
+    }
+
+    /**
+     * Expect the next JavaScript confirm dialog. Confirms are accepted by default.
+     *
+     * @return an expectation whose outcome can be configured before the action
+     */
+    public DialogExpectation expectConfirm() {
+        return expectDialog(DialogType.CONFIRM);
+    }
+
+    /**
+     * Expect the next JavaScript prompt dialog. Prompts are accepted with their default value
+     * unless {@link DialogExpectation#sendKeys(String)} or {@link DialogExpectation#dismiss()} is
+     * called before the action.
+     *
+     * @return an expectation whose response can be configured before the action
+     */
+    public DialogExpectation expectPrompt() {
+        return expectDialog(DialogType.PROMPT);
+    }
+
+    private DialogExpectation expectDialog(DialogType type) {
+        if (pendingDialogExpectation != null) {
+            throw new IllegalStateException("A JavaScript dialog expectation is already pending");
+        }
+        pendingDialogExpectation = new DialogExpectation(this, type);
+        return pendingDialogExpectation;
+    }
+
+    private DialogExpectation handleHtmlUnitDialog(DialogType type, String message) {
+        DialogExpectation expectation = pendingDialogExpectation;
+        if (expectation == null) {
+            if (pendingHtmlUnitDialogFailure == null) {
+                pendingHtmlUnitDialogFailure = unexpectedDialog(null, message);
+            }
+            return dismissedHtmlUnitDialog(type);
+        }
+        if (expectation.type != type) {
+            pendingDialogExpectation = null;
+            if (pendingHtmlUnitDialogFailure == null) {
+                pendingHtmlUnitDialogFailure = new IllegalStateException("Expected a JavaScript "
+                        + expectation.type.displayName + " dialog, but received a " + type.displayName
+                        + " dialog: " + message);
+            }
+            return dismissedHtmlUnitDialog(type);
+        }
+        pendingDialogExpectation = null;
+        expectation.text = message;
+        expectation.triggered = true;
+        return expectation;
+    }
+
+    private DialogExpectation dismissedHtmlUnitDialog(DialogType type) {
+        DialogExpectation expectation = new DialogExpectation(this, type);
+        expectation.action = DialogAction.DISMISS;
+        return expectation;
+    }
+
+    private void verifyDialogExpectation(DialogExpectation expectation) {
+        if (expectation != null && !expectation.triggered) {
+            if (pendingDialogExpectation == expectation) {
+                pendingDialogExpectation = null;
+            }
+            throw new IllegalStateException("Expected a JavaScript " + expectation.type.displayName
+                    + " dialog, but no dialog appeared");
+        }
+    }
+
+    private void handleWebDriverDialog(UnhandledAlertException actionFailure) {
+        DialogExpectation expectation = pendingDialogExpectation;
+        Alert alert;
+        try {
+            alert = webDriver.switchTo().alert();
+        } catch (NoAlertPresentException noAlert) {
+            if (actionFailure != null) {
+                String message = actionFailure.getAlertText();
+                if (expectation == null) {
+                    throw new IllegalStateException("Unexpected JavaScript dialog: " + message, actionFailure);
+                }
+                pendingDialogExpectation = null;
+                throw new IllegalStateException("Could not handle the expected JavaScript "
+                        + expectation.type.displayName + " dialog: " + message, actionFailure);
+            }
+            verifyDialogExpectation(expectation);
+            return;
+        }
+
+        String message = alert.getText();
+        if (expectation == null) {
+            alert.dismiss();
+            throw unexpectedDialog(null, message);
+        }
+
+        expectation.text = message;
+        expectation.triggered = true;
+        pendingDialogExpectation = null;
+        if (expectation.action == DialogAction.DISMISS) {
+            alert.dismiss();
+        } else {
+            if (expectation.type == DialogType.PROMPT && expectation.promptResponse != null) {
+                alert.sendKeys(expectation.promptResponse);
+            }
+            alert.accept();
+        }
+    }
+
+    private static IllegalStateException unexpectedDialog(DialogType type, String message) {
+        String kind = type == null ? "JavaScript" : "JavaScript " + type.displayName;
+        return new IllegalStateException("Unexpected " + kind + " dialog: " + message);
+    }
+
     private void updateFromDriver() {
+        handleWebDriverDialog(null);
         renderedHtml = webDriver.getPageSource();
         String url = webDriver.getCurrentUrl();
         currentUrl = url;
@@ -327,10 +554,12 @@ public class WebTest implements AutoCloseable {
             if (browser == Browser.CHROME) {
                 ChromeOptions options = new ChromeOptions();
                 options.addArguments("--headless=new");
+                options.setCapability("unhandledPromptBehavior", "ignore");
                 return new ChromeDriver(options);
             } else if (browser == Browser.FIREFOX) {
                 FirefoxOptions options = new FirefoxOptions();
                 options.addArguments("--headless");
+                options.setCapability("unhandledPromptBehavior", "ignore");
                 return new FirefoxDriver(options);
             } else {
                 throw new IllegalArgumentException("Unsupported browser: " + browser);
@@ -368,6 +597,16 @@ public class WebTest implements AutoCloseable {
         if (browser == Browser.HTML_UNIT) {
             this.console = new BrowserConsole();
             this.htmlClient = new WebClient();
+            htmlClient.setAlertHandler((page, message) -> handleHtmlUnitDialog(DialogType.ALERT, message));
+            htmlClient.setConfirmHandler((page, message) ->
+                    handleHtmlUnitDialog(DialogType.CONFIRM, message).action == DialogAction.ACCEPT);
+            htmlClient.setPromptHandler((page, message, defaultValue) -> {
+                DialogExpectation expectation = handleHtmlUnitDialog(DialogType.PROMPT, message);
+                if (expectation.action == DialogAction.DISMISS) {
+                    return null;
+                }
+                return expectation.promptResponse == null ? defaultValue : expectation.promptResponse;
+            });
             // Disable HtmlUnit response caching so we always fetch the latest page content.
             // When the application allows caching headers (for production static assets),
             // HtmlUnit will otherwise reuse cached HTML responses between requests which
@@ -508,35 +747,132 @@ public class WebTest implements AutoCloseable {
         if (response == null) {
             return null;
         }
+        if (!htmlClient.getOptions().isJavaScriptEnabled()) {
+            return response;
+        }
 
         String contentType = response.getContentType();
-        if (contentType == null || !contentType.toLowerCase(Locale.ROOT).contains("text/html")) {
-            return response;
+        if (contentType != null && contentType.toLowerCase(Locale.ROOT).contains("text/html")) {
+            String content = response.getContentAsString();
+            inspectHtmlScripts(content, request.getUrl().toExternalForm());
+
+            String headTag = "<head>";
+            int headIndex = content.indexOf(headTag);
+            if (headIndex < 0) {
+                return response;
+            }
+
+            String polyfills = "<script>"
+                    + "if(typeof Symbol==='undefined'){window.Symbol=function Symbol(description){return '@@symbol:' + (description||'') + ':' + Math.random().toString(36).slice(2);};window.Symbol.iterator='@@iterator';}"
+                    + "if(typeof queueMicrotask==='undefined'){window.queueMicrotask=function queueMicrotask(callback){Promise.resolve().then(callback);};}"
+                    + "if(typeof structuredClone==='undefined'){window.structuredClone=function structuredClone(value){return value===undefined?undefined:JSON.parse(JSON.stringify(value));};}"
+                    + "if(typeof requestIdleCallback==='undefined'){window.requestIdleCallback=function requestIdleCallback(callback){return window.setTimeout(function(){callback({didTimeout:false,timeRemaining:function timeRemaining(){return 0;}});},1);};window.cancelIdleCallback=function cancelIdleCallback(handle){window.clearTimeout(handle);};}"
+                    + "if(typeof ResizeObserver==='undefined'){window.ResizeObserver=function ResizeObserver(callback){this.observe=function(){};this.unobserve=function(){};this.disconnect=function(){};};}"
+                    + "</script>";
+            String updatedContent = content.substring(0, headIndex + headTag.length()) + polyfills + content.substring(headIndex + headTag.length());
+            byte[] updatedBytes = updatedContent.getBytes(StandardCharsets.UTF_8);
+
+            WebResponseData data = new WebResponseData(
+                    updatedBytes,
+                    response.getStatusCode(),
+                    response.getStatusMessage(),
+                    response.getResponseHeaders());
+            return new WebResponse(data, request, response.getLoadTime());
         }
 
-        String content = response.getContentAsString();
-        String headTag = "<head>";
-        int headIndex = content.indexOf(headTag);
-        if (headIndex < 0) {
-            return response;
+        if (isJavaScriptResponse(contentType, request.getUrl())) {
+            inspectJavaScriptSource(response.getContentAsString(), request.getUrl().toExternalForm());
         }
+        return response;
+    }
 
-        String polyfills = "<script>"
-                + "if(typeof Symbol==='undefined'){window.Symbol=function Symbol(description){return '@@symbol:' + (description||'') + ':' + Math.random().toString(36).slice(2);};window.Symbol.iterator='@@iterator';}"
-                + "if(typeof queueMicrotask==='undefined'){window.queueMicrotask=function queueMicrotask(callback){Promise.resolve().then(callback);};}"
-                + "if(typeof structuredClone==='undefined'){window.structuredClone=function structuredClone(value){return value===undefined?undefined:JSON.parse(JSON.stringify(value));};}"
-                + "if(typeof requestIdleCallback==='undefined'){window.requestIdleCallback=function requestIdleCallback(callback){return window.setTimeout(function(){callback({didTimeout:false,timeRemaining:function timeRemaining(){return 0;}});},1);};window.cancelIdleCallback=function cancelIdleCallback(handle){window.clearTimeout(handle);};}"
-                + "if(typeof ResizeObserver==='undefined'){window.ResizeObserver=function ResizeObserver(callback){this.observe=function(){};this.unobserve=function(){};this.disconnect=function(){};};}"
-                + "</script>";
-        String updatedContent = content.substring(0, headIndex + headTag.length()) + polyfills + content.substring(headIndex + headTag.length());
-        byte[] updatedBytes = updatedContent.getBytes(StandardCharsets.UTF_8);
+    private static boolean isJavaScriptResponse(String contentType, URL url) {
+        String mimeType = contentType == null ? "" : contentType.toLowerCase(Locale.ROOT);
+        String path = url.getPath().toLowerCase(Locale.ROOT);
+        return mimeType.contains("javascript") || mimeType.contains("ecmascript")
+                || path.endsWith(".js") || path.endsWith(".mjs");
+    }
 
-        WebResponseData data = new WebResponseData(
-                updatedBytes,
-                response.getStatusCode(),
-                response.getStatusMessage(),
-                response.getResponseHeaders());
-        return new WebResponse(data, request, response.getLoadTime());
+    private void inspectHtmlScripts(String html, String pageUrl) {
+        Document document = Jsoup.parse(html, pageUrl);
+        for (Element script : document.select("script")) {
+            String sourceUrl = script.hasAttr("src") ? script.absUrl("src") : pageUrl + " (inline script)";
+            if (sourceUrl.isBlank()) {
+                sourceUrl = pageUrl;
+            }
+            if ("module".equalsIgnoreCase(script.attr("type").trim())) {
+                recordUnsupportedJavascript("JavaScript module scripts (<script type=\"module\">)", sourceUrl);
+            } else if (!script.hasAttr("src")) {
+                inspectJavaScriptSource(script.data(), sourceUrl);
+            }
+        }
+    }
+
+    private void inspectJavaScriptSource(String source, String sourceUrl) {
+        if (source == null || source.isEmpty()) {
+            return;
+        }
+        String code = maskJavaScriptCommentsAndStrings(source);
+        if (JAVASCRIPT_CLASS_SYNTAX.matcher(code).find()) {
+            recordUnsupportedJavascript("ES class syntax", sourceUrl);
+        }
+        if (JAVASCRIPT_ASYNC_SYNTAX.matcher(code).find()) {
+            recordUnsupportedJavascript("async/await syntax", sourceUrl);
+        }
+    }
+
+    private static String maskJavaScriptCommentsAndStrings(String source) {
+        StringBuilder code = new StringBuilder(source);
+        int index = 0;
+        while (index < source.length()) {
+            char current = source.charAt(index);
+            if (current == '/' && index + 1 < source.length() && source.charAt(index + 1) == '/') {
+                int end = index + 2;
+                while (end < source.length() && source.charAt(end) != '\n' && source.charAt(end) != '\r') {
+                    end++;
+                }
+                maskNonLineBreaks(code, index, end);
+                index = end;
+            } else if (current == '/' && index + 1 < source.length() && source.charAt(index + 1) == '*') {
+                int end = source.indexOf("*/", index + 2);
+                end = end < 0 ? source.length() : end + 2;
+                maskNonLineBreaks(code, index, end);
+                index = end;
+            } else if (current == '\'' || current == '"' || current == '`') {
+                char quote = current;
+                int end = index + 1;
+                while (end < source.length()) {
+                    char next = source.charAt(end++);
+                    if (next == '\\' && end < source.length()) {
+                        end++;
+                    } else if (next == quote) {
+                        break;
+                    }
+                }
+                maskNonLineBreaks(code, index, end);
+                index = end;
+            } else {
+                index++;
+            }
+        }
+        return code.toString();
+    }
+
+    private static void maskNonLineBreaks(StringBuilder source, int start, int end) {
+        for (int index = start; index < end; index++) {
+            char current = source.charAt(index);
+            if (current != '\n' && current != '\r') {
+                source.setCharAt(index, ' ');
+            }
+        }
+    }
+
+    private void recordUnsupportedJavascript(String feature, String sourceUrl) {
+        String diagnostic = "Unsupported JavaScript: HtmlUnit cannot execute " + feature + " in " + sourceUrl
+                + "; use WebTest.Browser.CHROME or WebTest.Browser.FIREFOX for this page.";
+        if (!console.getErrors().contains(diagnostic)) {
+            console.getErrors().add(diagnostic);
+        }
     }
 
     public WebTest submitForm(String formId, Map<String, String> values) throws IOException, InterruptedException {
@@ -1001,7 +1337,7 @@ public class WebTest implements AutoCloseable {
 
     /**
      * Do not fail the test when the page raises JavaScript errors, for example scripts the
-     * HtmlUnit engine cannot parse. Errors remain available through {@link #javascriptErrors()}.
+     * HtmlUnit engine cannot parse. Diagnostics remain available through {@link #javascriptErrors()}.
      *
      * @return this WebTest
      */
@@ -1011,7 +1347,9 @@ public class WebTest implements AutoCloseable {
     }
 
     /**
-     * @return the JavaScript errors collected from the current page
+     * Returns JavaScript errors and unsupported-syntax diagnostics recorded for the current page.
+     *
+     * @return the JavaScript errors and unsupported-syntax diagnostics collected from the current page
      */
     public List<String> javascriptErrors() {
         return List.copyOf(console.getErrors());
@@ -1034,6 +1372,20 @@ public class WebTest implements AutoCloseable {
         throw new IllegalStateException("Unsupported browser: " + browser);
     }
 
+    /**
+     * Evaluates a JavaScript expression and wraps its engine-independent Java result in a
+     * {@link JsValue}. Numbers are normalized to {@link Double}; arrays and plain objects become
+     * recursively normalized {@link List} and {@link Map} values. JavaScript {@code null} and
+     * {@code undefined} both become {@code null}.
+     * Use {@link #executeScript(String)} for side-effect-only scripts, including scripts that start
+     * asynchronous work.
+     *
+     * @param script JavaScript expression to evaluate
+     * @return the normalized JavaScript result
+     * @throws IOException if the browser cannot load or update the page
+     * @throws InterruptedException if waiting for the browser is interrupted
+     * @throws IllegalArgumentException if the result is not a primitive, array, or plain object
+     */
     public JsValue evaluateScript(String script) throws IOException, InterruptedException {
         if (browser == Browser.HTML_UNIT) {
             Object result = htmlPage.executeJavaScript(script).getJavaScriptResult();
@@ -1052,10 +1404,52 @@ public class WebTest implements AutoCloseable {
     }
 
     private static JsValue normaliseJavaScriptResult(Object result) {
-        if (result instanceof Undefined) {
-            return new JsValue(null);
+        return new JsValue(toJavaScriptValue(result, new IdentityHashMap<>()));
+    }
+
+    private static Object toJavaScriptValue(Object value, IdentityHashMap<Object, Object> convertedValues) {
+        if (value == null || value instanceof Undefined) {
+            return null;
         }
-        return new JsValue(result);
+        if (value instanceof Number number) {
+            return number.doubleValue();
+        }
+        if (value instanceof CharSequence text) {
+            return text.toString();
+        }
+        if (value instanceof Boolean) {
+            return value;
+        }
+
+        if (convertedValues.containsKey(value)) {
+            return convertedValues.get(value);
+        }
+        if (value instanceof Map<?, ?> map) {
+            Map<String, Object> converted = new LinkedHashMap<>();
+            convertedValues.put(value, converted);
+            map.forEach((key, nestedValue) ->
+                    converted.put(String.valueOf(key), toJavaScriptValue(nestedValue, convertedValues)));
+            return converted;
+        }
+        if (value instanceof List<?> list) {
+            List<Object> converted = new ArrayList<>(list.size());
+            convertedValues.put(value, converted);
+            for (Object nestedValue : list) {
+                converted.add(toJavaScriptValue(nestedValue, convertedValues));
+            }
+            return converted;
+        }
+        if (value.getClass().isArray()) {
+            int length = Array.getLength(value);
+            List<Object> converted = new ArrayList<>(length);
+            convertedValues.put(value, converted);
+            for (int index = 0; index < length; index++) {
+                converted.add(toJavaScriptValue(Array.get(value, index), convertedValues));
+            }
+            return converted;
+        }
+        throw new IllegalArgumentException(
+                "Unsupported JavaScript result type; return a primitive, array, or plain object instead");
     }
 
     private static boolean isInteractable(DomElement element) {
@@ -1079,13 +1473,20 @@ public class WebTest implements AutoCloseable {
             if (element == null) {
                 throw new IllegalArgumentException("Element '" + selector + "' not found");
             }
+            WebWindow currentWindow = htmlPage.getEnclosingWindow();
+            DialogExpectation expectation = pendingDialogExpectation;
             Page page = ((HtmlElement) element).click(false, false, false, true, true, true, false);
-            updateFromPage(page);
+            updateFromClickedPage(page, currentWindow);
+            verifyDialogExpectation(expectation);
             return this;
         }
         if (usesWebDriver()) {
             WebElement element = webDriver.findElement(By.cssSelector(selector));
-            ((JavascriptExecutor) webDriver).executeScript("arguments[0].click();", element);
+            try {
+                ((JavascriptExecutor) webDriver).executeScript("arguments[0].click();", element);
+            } catch (UnhandledAlertException ex) {
+                handleWebDriverDialog(ex);
+            }
             updateFromDriver();
             return this;
         }
@@ -1102,13 +1503,20 @@ public class WebTest implements AutoCloseable {
             if (!isInteractable(element)) {
                 throw new IllegalStateException("Element '" + selector + "' is not interactable (hidden or disabled)");
             }
+            WebWindow currentWindow = htmlPage.getEnclosingWindow();
+            DialogExpectation expectation = pendingDialogExpectation;
             Page page = ((HtmlElement) element).click();
-            updateFromPage(page);
+            updateFromClickedPage(page, currentWindow);
+            verifyDialogExpectation(expectation);
             return this;
         }
         if (usesWebDriver()) {
             WebElement el = webDriver.findElement(By.cssSelector(selector));
-            el.click();
+            try {
+                el.click();
+            } catch (UnhandledAlertException ex) {
+                handleWebDriverDialog(ex);
+            }
             updateFromDriver();
             return this;
         }
@@ -1326,6 +1734,16 @@ public class WebTest implements AutoCloseable {
         return Jsoup.parse(html, base);
     }
 
+    private void updateFromClickedPage(Page clickedPage, WebWindow currentWindow) {
+        if (clickedPage.getEnclosingWindow() == currentWindow) {
+            updateFromPage(clickedPage);
+            return;
+        }
+
+        htmlClient.setCurrentWindow(currentWindow);
+        updateFromPage(currentWindow.getEnclosedPage());
+    }
+
     private void updateFromPage(Page page) {
         this.htmlPage = page instanceof HtmlPage ? (HtmlPage) page : null;
         currentDocumentIsBrowserPage = htmlPage != null;
@@ -1372,6 +1790,11 @@ public class WebTest implements AutoCloseable {
     }
 
     private void checkForJavascriptErrors() {
+        if (pendingHtmlUnitDialogFailure != null) {
+            IllegalStateException failure = pendingHtmlUnitDialogFailure;
+            pendingHtmlUnitDialogFailure = null;
+            throw failure;
+        }
         if (console == null || console.getErrors().isEmpty() || ignoreJavascriptErrors) {
             return;
         }

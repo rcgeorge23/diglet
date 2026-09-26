@@ -49,8 +49,12 @@ class WebTestIntegrationTest {
     }
 
     private static void respond(HttpExchange exchange, String body) throws IOException {
+        respond(exchange, "text/html", body);
+    }
+
+    private static void respond(HttpExchange exchange, String contentType, String body) throws IOException {
         byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
-        exchange.getResponseHeaders().add("Content-Type", "text/html");
+        exchange.getResponseHeaders().add("Content-Type", contentType);
         exchange.sendResponseHeaders(200, bytes.length);
         try (OutputStream os = exchange.getResponseBody()) {
             os.write(bytes);
@@ -97,6 +101,97 @@ class WebTestIntegrationTest {
         assertThatThrownBy(() -> new WebTest(port).navigateTo("/error"))
                 .isInstanceOf(RuntimeException.class)
                 .hasMessageContaining("broken script");
+    }
+
+    @Test
+    void classSyntaxFailsWithActionableHtmlUnitDiagnostic() throws Exception {
+        int port = startServer(server -> server.createContext("/class", ex -> respond(ex,
+                "<html><body><script>class UnsupportedFeature {}</script></body></html>")));
+
+        assertThatThrownBy(() -> new WebTest(port).navigateTo("/class"))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessageContaining("HtmlUnit cannot execute")
+                .hasMessageContaining("class syntax")
+                .hasMessageContaining("Browser.CHROME");
+    }
+
+    @Test
+    void asyncFunctionSyntaxFailsWithActionableHtmlUnitDiagnostic() throws Exception {
+        int port = startServer(server -> server.createContext("/async", ex -> respond(ex,
+                "<html><body><script>async function loadData() { return 1; }</script></body></html>")));
+
+        assertThatThrownBy(() -> new WebTest(port).navigateTo("/async"))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessageContaining("HtmlUnit cannot execute")
+                .hasMessageContaining("async/await syntax")
+                .hasMessageContaining("Browser.CHROME");
+    }
+
+    @Test
+    void unsupportedClassSyntaxInBootstrapBundleIsNotSilentlyIgnored() throws Exception {
+        int port = startServer(server -> {
+            server.createContext("/page", ex -> respond(ex,
+                    "<html><body><script src='/js/bootstrap.bundle.min.js'></script></body></html>"));
+            server.createContext("/js/bootstrap.bundle.min.js", ex -> respond(ex,
+                    "application/javascript", "class UnsupportedFeature {}"));
+        });
+
+        assertThatThrownBy(() -> new WebTest(port).navigateTo("/page"))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessageContaining("HtmlUnit cannot execute")
+                .hasMessageContaining("class syntax")
+                .hasMessageContaining("bootstrap.bundle.min.js");
+    }
+
+    @Test
+    void moduleScriptFailsWithActionableHtmlUnitDiagnostic() throws Exception {
+        int port = startServer(server -> server.createContext("/module", ex -> respond(ex,
+                "<html><body><script type='module'>document.body.dataset.ran='true';</script></body></html>")));
+
+        assertThatThrownBy(() -> new WebTest(port).navigateTo("/module"))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessageContaining("HtmlUnit cannot execute")
+                .hasMessageContaining("JavaScript module")
+                .hasMessageContaining("Browser.CHROME");
+    }
+
+    @Test
+    void moduleDiagnosticRemainsInspectableWhenJavascriptErrorsAreIgnored() throws Exception {
+        int port = startServer(server -> server.createContext("/module", ex -> respond(ex,
+                "<html><body><script type='module'>document.body.dataset.ran='true';</script></body></html>")));
+
+        WebTest webTest = new WebTest(port).ignoreJavascriptErrors().navigateTo("/module");
+
+        assertThat(webTest.javascriptErrors())
+                .anyMatch(error -> error.contains("HtmlUnit cannot execute")
+                        && error.contains("JavaScript module")
+                        && error.contains("Browser.CHROME"));
+    }
+
+    @Test
+    void javascriptKeywordsInStringsAndCommentsAreNotReportedAsUnsupported() throws Exception {
+        int port = startServer(server -> server.createContext("/ordinary", ex -> respond(ex,
+                """
+                        <html><body><script>
+                        // class CommentedOut {}
+                        /* async function commentedOut() { await commentedOut(); } */
+                        var sourceText = "class InAString {} async function inAString() { await inAString(); }";
+                        </script></body></html>
+                        """)));
+
+        WebTest webTest = new WebTest(port).navigateTo("/ordinary");
+
+        assertThat(webTest.javascriptErrors()).isEmpty();
+    }
+
+    @Test
+    void unsupportedJavascriptIsNotReportedWhenJavascriptIsDisabled() throws Exception {
+        int port = startServer(server -> server.createContext("/disabled", ex -> respond(ex,
+                "<html><body>static content<script type='module'>class UnsupportedFeature {}</script></body></html>")));
+
+        WebTest webTest = new WebTest(port).withJavaScriptEnabled(false).navigateTo("/disabled");
+
+        assertThat(webTest.assertPageBodyContains("static content").javascriptErrors()).isEmpty();
     }
 
     @Test
@@ -197,6 +292,38 @@ class WebTestIntegrationTest {
 
         new WebTest(port, false, WebTest.Browser.HTML_UNIT)
                 .navigateTo("/page1").click("#link").assertPageBodyContains("page2");
+    }
+
+    @Test
+    void targetBlankClickKeepsTheCurrentPageContext() throws Exception {
+        int port = startServer(server -> {
+            server.createContext("/page", ex -> respond(ex,
+                    "<html><body><main>ORIGINAL</main>"
+                            + "<a id='popup' href='/popup' target='_blank'>Open</a>"
+                            + "<a id='forced-popup' href='/forced-popup' target='_blank'>Open forcefully</a>"
+                            + "</body></html>"));
+            server.createContext("/popup", ex -> respond(ex, "<html><body>POPUP</body></html>"));
+            server.createContext("/forced-popup", ex -> respond(ex, "<html><body>FORCED POPUP</body></html>"));
+            server.createContext("/next", ex -> respond(ex, "<html><body>NEXT</body></html>"));
+        });
+        WebTest webTest = new WebTest(port).navigateTo("/page");
+
+        try {
+            webTest.click("#popup");
+
+            assertThat(webTest.body()).contains("ORIGINAL").doesNotContain("POPUP");
+            webTest.assertCurrentUrlIs("http://localhost:" + port + "/page");
+
+            webTest.forceClick("#forced-popup");
+            assertThat(webTest.body()).contains("ORIGINAL").doesNotContain("FORCED POPUP");
+            webTest.assertCurrentUrlIs("http://localhost:" + port + "/page");
+
+            webTest.navigateTo("/next")
+                    .assertPageBodyContains("NEXT")
+                    .assertCurrentUrlIs("http://localhost:" + port + "/next");
+        } finally {
+            webTest.close();
+        }
     }
 
     @Test

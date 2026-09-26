@@ -6,6 +6,8 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
+import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.AfterEach;
@@ -13,6 +15,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.openqa.selenium.htmlunit.HtmlUnitDriver;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class WebTestDriverAgnosticTest {
 
@@ -47,6 +50,174 @@ class WebTestDriverAgnosticTest {
                     .assertPageBodyContains("q=hello");
 
             assertThat(webTest.evaluateScript("document.title").asString()).isEqualTo("Done");
+        } finally {
+            webTest.close();
+        }
+    }
+
+    @ParameterizedTest
+    @MethodSource("browsers")
+    void canDismissExpectedConfirmAndInspectItsText(String mode) throws Exception {
+        int port = startServer();
+        WebTest webTest = "web-driver".equals(mode)
+                ? new WebTest(port, false, WebTest.Browser.CHROME, () -> new HtmlUnitDriver(true))
+                : new WebTest(port, false, WebTest.Browser.HTML_UNIT);
+
+        try {
+            webTest.navigateTo("/dialogs");
+            var confirm = webTest.expectConfirm().dismiss();
+
+            webTest.click("#confirm");
+
+            assertThat(confirm.getText()).isEqualTo("Remove this queued email?");
+            assertThat(webTest.evaluateScript("window.confirmResult").asBoolean()).isFalse();
+        } finally {
+            webTest.close();
+        }
+    }
+
+    @ParameterizedTest
+    @MethodSource("browsers")
+    void canAcceptExpectedAlertAndInspectItsText(String mode) throws Exception {
+        int port = startServer();
+        WebTest webTest = "web-driver".equals(mode)
+                ? new WebTest(port, false, WebTest.Browser.CHROME, () -> new HtmlUnitDriver(true))
+                : new WebTest(port, false, WebTest.Browser.HTML_UNIT);
+
+        try {
+            webTest.navigateTo("/dialogs");
+            WebTest.DialogExpectation alert = webTest.expectAlert();
+
+            webTest.click("#alert");
+
+            assertThat(alert.getText()).isEqualTo("Account archived");
+            assertThat(webTest.evaluateScript("window.alertResult").asBoolean()).isTrue();
+        } finally {
+            webTest.close();
+        }
+    }
+
+    @ParameterizedTest
+    @MethodSource("browsers")
+    void canRespondToExpectedPromptAndInspectItsText(String mode) throws Exception {
+        int port = startServer();
+        WebTest webTest = "web-driver".equals(mode)
+                ? new WebTest(port, false, WebTest.Browser.CHROME, () -> new HtmlUnitDriver(true))
+                : new WebTest(port, false, WebTest.Browser.HTML_UNIT);
+
+        try {
+            webTest.navigateTo("/dialogs");
+            var prompt = webTest.expectPrompt().sendKeys("Ada");
+
+            webTest.click("#prompt");
+
+            assertThat(prompt.getText()).isEqualTo("Your name?");
+            assertThat(webTest.evaluateScript("window.promptResult").asString()).isEqualTo("Ada");
+        } finally {
+            webTest.close();
+        }
+    }
+
+    @ParameterizedTest
+    @MethodSource("browsers")
+    void unexpectedDialogFailsClearly(String mode) throws Exception {
+        int port = startServer();
+        WebTest webTest = "web-driver".equals(mode)
+                ? new WebTest(port, false, WebTest.Browser.CHROME, () -> new HtmlUnitDriver(true))
+                : new WebTest(port, false, WebTest.Browser.HTML_UNIT);
+
+        try {
+            webTest.navigateTo("/dialogs");
+
+            assertThatThrownBy(() -> webTest.click("#unexpected"))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessage("Unexpected JavaScript dialog: Unexpected dialog");
+        } finally {
+            webTest.close();
+        }
+    }
+
+    @ParameterizedTest
+    @MethodSource("browsers")
+    void expectedDialogMustBeTriggeredByTheAction(String mode) throws Exception {
+        int port = startServer();
+        WebTest webTest = "web-driver".equals(mode)
+                ? new WebTest(port, false, WebTest.Browser.CHROME, () -> new HtmlUnitDriver(true))
+                : new WebTest(port, false, WebTest.Browser.HTML_UNIT);
+
+        try {
+            webTest.navigateTo("/dialogs");
+            webTest.expectConfirm();
+
+            assertThatThrownBy(() -> webTest.click("#no-dialog"))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessage("Expected a JavaScript confirm dialog, but no dialog appeared");
+        } finally {
+            webTest.close();
+        }
+    }
+
+    @ParameterizedTest
+    @MethodSource("browsers")
+    void evaluateScriptReturnsEngineIndependentJavaValues(String mode) throws Exception {
+        int port = startServer();
+        WebTest webTest = "web-driver".equals(mode)
+                ? new WebTest(port, false, WebTest.Browser.CHROME, () -> new HtmlUnitDriver(true))
+                : new WebTest(port, false, WebTest.Browser.HTML_UNIT);
+
+        try {
+            webTest.navigateTo("/form");
+
+            JsValue number = webTest.evaluateScript("1 + 1");
+            assertThat(number.asObject()).isEqualTo(2.0d);
+            assertThat(number.asInt()).isEqualTo(2);
+
+            JsValue bool = webTest.evaluateScript("true");
+            assertThat(bool.asObject()).isEqualTo(true);
+            assertThat(bool.asBoolean()).isTrue();
+
+            JsValue string = webTest.evaluateScript("'text'");
+            assertThat(string.asObject()).isEqualTo("text");
+            assertThat(string.asString()).isEqualTo("text");
+            assertThat(webTest.evaluateScript("'di' + 'glet'").asObject()).isEqualTo("diglet");
+
+            JsValue nullValue = webTest.evaluateScript("null");
+            assertThat(nullValue.isNull()).isTrue();
+            assertThat(nullValue.asObject()).isNull();
+            assertThat(webTest.evaluateScript("undefined").isNull()).isTrue();
+
+            Object array = webTest.evaluateScript("[1, true, 'text', null, [2]]").asObject();
+            assertThat(array.getClass().getPackageName()).doesNotStartWith("org.htmlunit");
+            assertThat(array).isEqualTo(Arrays.asList(1.0d, true, "text", null, List.of(2.0d)));
+
+            Object object = webTest.evaluateScript("({number: 3, enabled: true, text: 'value', "
+                    + "values: [4, 'nested'], child: {count: 5}})").asObject();
+            assertThat(object.getClass().getPackageName()).doesNotStartWith("org.htmlunit");
+            assertThat(object).isEqualTo(Map.of(
+                    "number", 3.0d,
+                    "enabled", true,
+                    "text", "value",
+                    "values", List.of(4.0d, "nested"),
+                    "child", Map.of("count", 5.0d)));
+        } finally {
+            webTest.close();
+        }
+    }
+
+    @ParameterizedTest
+    @MethodSource("browsers")
+    void evaluateScriptRejectsEngineSpecificObjects(String mode) throws Exception {
+        int port = startServer();
+        WebTest webTest = "web-driver".equals(mode)
+                ? new WebTest(port, false, WebTest.Browser.CHROME, () -> new HtmlUnitDriver(true))
+                : new WebTest(port, false, WebTest.Browser.HTML_UNIT);
+
+        try {
+            webTest.navigateTo("/form");
+
+            assertThatThrownBy(() -> webTest.evaluateScript("document.body"))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("primitive, array, or plain object");
         } finally {
             webTest.close();
         }
@@ -157,6 +328,14 @@ class WebTestDriverAgnosticTest {
         });
         server.createContext("/direct-form", exchange -> respond(exchange,
                 "<html><body><textarea name='notes'>response notes</textarea></body></html>"));
+        server.createContext("/dialogs", exchange -> respond(exchange,
+                "<html><body>"
+                        + "<button id='confirm' onclick=\"window.confirmResult = confirm('Remove this queued email?');\">Confirm</button>"
+                        + "<button id='alert' onclick=\"window.alertResult = false; alert('Account archived'); window.alertResult = true;\">Alert</button>"
+                        + "<button id='prompt' onclick=\"window.promptResult = prompt('Your name?', '');\">Prompt</button>"
+                        + "<button id='unexpected' onclick=\"alert('Unexpected dialog');\">Unexpected</button>"
+                        + "<button id='no-dialog'>No dialog</button>"
+                        + "</body></html>"));
         server.start();
         return server.getAddress().getPort();
     }

@@ -83,11 +83,53 @@ Maven:
 - Support the `fetch` API (including method, headers and body options) within page JavaScript,
   enabling tests to trigger AJAX-driven UI updates.
 
+## HtmlUnit JavaScript compatibility
+
+HtmlUnit does not implement every modern JavaScript feature. In `Browser.HTML_UNIT` mode, Diglet
+detects common ES class and `async`/`await` syntax in inline and external scripts, as well as
+`<script type="module">`, and fails with a diagnostic that identifies the source and recommends
+`Browser.CHROME` or `Browser.FIREFOX`. This is targeted detection, not a complete ECMAScript parser.
+
+Use a real browser for flows that depend on those features. If JavaScript errors are irrelevant to a
+server-rendered test, `ignoreJavascriptErrors()` lets navigation continue and `javascriptErrors()`
+still exposes the diagnostics; it does not make unsupported scripts execute. Use
+`withJavaScriptEnabled(false)` when a test intentionally needs only the server-rendered markup.
+
+`evaluateScript(expression)` returns a `JsValue` in both browser modes. Its `asObject()` method
+exposes Java values rather than engine-specific wrappers: numbers are `Double`, booleans are
+`Boolean`, strings are `String`, JavaScript `null` and `undefined` are `null`, arrays are recursively
+converted to `List<Object>`, and plain objects to `Map<String, Object>`. Returning a DOM node,
+function, or another non-plain JavaScript object throws `IllegalArgumentException` instead of
+exposing a browser-engine object. Use `executeScript` for side-effect-only scripts, including ones
+that start asynchronous work; use `evaluateScript` when you need a supported return value.
+
 `submitForm` and `submitFormBySelector` fire the submit event and honour constraint validation, so
 page JavaScript validation, AJAX submit handlers and `preventDefault` behave as they would in a
 browser. Use `forceSubmitForm` or `forceSubmitFormBySelector` to bypass both (as a JavaScript
 `form.submit()` call would) when a test needs to reach server-side validation of input the browser
 would normally block.
+
+## JavaScript dialogs
+
+Declare the next dialog before triggering the action. Expectations accept dialogs by default; use
+`dismiss()` for a confirmation or prompt, or `sendKeys()` to answer a prompt:
+
+```java
+var confirmation = webTest.expectConfirm().dismiss();
+webTest.click("#remove");
+assertThat(confirmation.getText()).isEqualTo("Remove this item?");
+
+var prompt = webTest.expectPrompt().sendKeys("Ada");
+webTest.click("#rename");
+assertThat(prompt.getText()).isEqualTo("New name?");
+```
+
+`expectAlert()` handles alerts, while `expectConfirm()` and `expectPrompt()` expose the selected
+result through the page's JavaScript. If an expected dialog does not appear, or an unanticipated
+dialog appears, the action fails with an `IllegalStateException`. This remains true when
+`ignoreJavascriptErrors()` is enabled. The default Chrome and Firefox drivers leave prompts open for
+`WebTest` to handle; custom WebDriver suppliers should use the `unhandledPromptBehavior=ignore`
+capability as well.
 
 ## Typical usage
 
@@ -141,10 +183,11 @@ void userCanLogIn(Browser browser) throws Exception {
 A custom `Supplier<WebDriver>` can be supplied for non-default drivers, and `WebDriverPool` reuses
 one browser process across tests.
 
-Known divergences to assert around: `target="_blank"` links replace the current page in HTML_UNIT
-mode, and `status()` is only meaningful in HTML_UNIT mode (WebDriver mode reports 200). Prefer
-assertions on page content and URLs for flows that must pass in both modes. See the diglet test
-suite (`WebTestDriverAgnosticTest`) for a worked example.
+After clicking a `target="_blank"` link in HTML_UNIT mode, `WebTest` stays on the original window;
+the opened window is not exposed for selection. HTTP status is available for HtmlUnit pages and
+direct HTTP responses, but not after WebDriver navigation. Prefer assertions on page content and URLs
+for flows that must pass in both modes. See the diglet test suite (`WebTestDriverAgnosticTest`) for a
+worked example.
 
 ## Running the same flow in more than one browser
 
@@ -177,9 +220,10 @@ void theSameFlowRunsInBothModes(String mode) {
 
 Assertions that behave identically in both modes are content-based (`assertPageBodyContains`,
 `assertPageTextContains`), URL-based (`assertCurrentUrlIs`), title-based, and `evaluateScript`
-results. Known divergences to keep out of shared flows: `target="_blank"` links replace the current
-page in HTML_UNIT mode, and `status()` is only meaningful in HTML_UNIT mode. For long-running
-browser suites, share one browser process across tests with `WebDriverPool`.
+results. HtmlUnit keeps the original window after a `target="_blank"` click but does not expose the
+new window for selection; use WebDriver for flows that need to interact with the opened window. HTTP
+status is unavailable after WebDriver navigation. For long-running browser suites, share one browser
+process across tests with `WebDriverPool`.
 
 ## Building and testing
 
