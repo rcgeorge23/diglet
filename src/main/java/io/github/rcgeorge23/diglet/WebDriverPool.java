@@ -18,6 +18,11 @@ public final class WebDriverPool implements Supplier<WebDriver>, AutoCloseable {
     private WebDriver driver;
     private boolean closed;
 
+    /**
+     * Creates a lazy WebDriver pool.
+     *
+     * @param supplier creates the WebDriver on first access
+     */
     public WebDriverPool(Supplier<WebDriver> supplier) {
         this.supplier = supplier;
     }

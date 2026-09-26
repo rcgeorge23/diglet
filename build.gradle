@@ -49,6 +49,29 @@ test {
     useJUnitPlatform()
 }
 
+sourceSets {
+    seleniumTest {
+        compileClasspath += sourceSets.main.output
+        runtimeClasspath += sourceSets.main.output
+    }
+}
+
+configurations {
+    seleniumTestImplementation.extendsFrom testImplementation
+    seleniumTestRuntimeOnly.extendsFrom testRuntimeOnly
+    seleniumTestCompileOnly.extendsFrom testCompileOnly
+    seleniumTestAnnotationProcessor.extendsFrom testAnnotationProcessor
+}
+
+tasks.register('seleniumTest', Test) {
+    description = 'Runs opt-in headless Chrome Selenium tests against local fixtures.'
+    group = 'verification'
+    testClassesDirs = sourceSets.seleniumTest.output.classesDirs
+    classpath = sourceSets.seleniumTest.runtimeClasspath
+    useJUnitPlatform()
+    shouldRunAfter test
+}
+
 publishing {
     publications {
         mavenJava(MavenPublication) {

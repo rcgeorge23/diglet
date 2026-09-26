@@ -44,7 +44,7 @@ jobs:
 
           echo "RELEASE_VERSION=$version" >> "$GITHUB_ENV"
       - name: Build and test
-        run: ./gradlew build --no-daemon -Pversion="$RELEASE_VERSION"
+        run: ./gradlew build seleniumTest --no-daemon -Pversion="$RELEASE_VERSION"
       - name: Publish to Maven Central
         run: ./gradlew publishAggregationToCentralPortal --no-daemon -Pversion="$RELEASE_VERSION"
         env:

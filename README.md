@@ -158,6 +158,48 @@ synchronization with Diglet's direct JDK HTTP client, and Diglet's JavaScript di
 API are not available in this mode. Keep Chrome/Firefox tests for behavior that depends on those
 capabilities or real-browser layout.
 
+## Selenium WebDriver test support
+
+Diglet also provides optional, lifecycle-free Selenium helpers in
+`io.github.rcgeorge23.diglet.selenium`. This package is useful when a test needs
+real Chrome behavior, such as layout, computed styles, trusted keyboard input,
+or browser functionality outside HtmlUnit's model. The default
+`WebTest` browser remains `Browser.HTML_UNIT`.
+
+Create and close the driver in the consuming test framework; Diglet does not
+own the driver or add JUnit/Spring lifecycle integration:
+
+```java
+WebDriver driver = ChromeDriverFactory.createChromeDriver();
+try {
+    SeleniumWebDriverTestSupport browser = new SeleniumWebDriverTestSupport(driver);
+    browser.open("http://localhost:8080/form");
+    browser.typeInto(By.id("name"), "Ada");
+    browser.click(By.id("save"));
+} finally {
+    driver.quit();
+}
+```
+
+`SeleniumWebDriverTestSupport` can also receive a caller-configured
+`WebDriverWait`. Its helpers cover document readiness, Bootstrap-style modal
+visibility, visible/stale-safe clicks, prioritized clicks, native
+Ctrl+A/`sendKeys` input, checkbox/radio change events, and script execution.
+`ChromeDriverFactory` supplies headless defaults and discovers Chrome and
+ChromeDriver from Selenium system properties, `CHROME_BINARY`, `CHROME_BIN`,
+`CHROMEDRIVER_PATH`, `CHROMEWEBDRIVER`, or executables on `PATH`.
+
+Chrome-specific local-fixture tests are kept in the opt-in `seleniumTest` task:
+
+```shell
+./gradlew seleniumTest
+```
+
+The regular `test`, `check`, and `build` tasks do not require Chrome. CI and
+release validation invoke `seleniumTest` explicitly. Selenium Java is already
+an API dependency of Diglet; these helpers do not add JUnit or Spring to the
+library.
+
 ## Typical usage
 
 Create an instance pointing at the local server under test and chain actions and assertions:
