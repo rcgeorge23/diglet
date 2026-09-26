@@ -131,6 +131,33 @@ dialog appears, the action fails with an `IllegalStateException`. This remains t
 `WebTest` to handle; custom WebDriver suppliers should use the `unhandledPromptBehavior=ignore`
 capability as well.
 
+## Lightpanda CDP mode
+
+`Browser.LIGHTPANDA` is an explicit opt-in mode for connecting to an externally provisioned
+Lightpanda browser through its Chrome DevTools Protocol (CDP) endpoint:
+
+```java
+var webTest = new WebTest(
+        port,
+        WebTest.Browser.LIGHTPANDA,
+        URI.create("http://127.0.0.1:9222"));
+```
+
+Start Lightpanda separately, for example with `lightpanda serve --host 127.0.0.1 --port 9222`,
+and configure the endpoint for your test environment. Diglet does not download, install, launch,
+or stop the browser, and the HtmlUnit default is unchanged. The Lightpanda binary is AGPL-3.0
+licensed; users provisioning it are responsible for reviewing and meeting the license obligations
+applicable to their use.
+
+This mode executes modern JavaScript using Lightpanda's V8 runtime and supports CDP navigation,
+page HTML/text, JavaScript evaluation, asynchronous page updates, selector-based clicks and
+synthetic input events. It is a DOM/CDP browser mode, not a layout engine: it does not provide
+computed geometry, rendered-visibility or image-layout fidelity, and its input events are not
+hardware or trusted keyboard events. HTTP response status after browser navigation, cookie
+synchronization with Diglet's direct JDK HTTP client, and Diglet's JavaScript dialog expectation
+API are not available in this mode. Keep Chrome/Firefox tests for behavior that depends on those
+capabilities or real-browser layout.
+
 ## Typical usage
 
 Create an instance pointing at the local server under test and chain actions and assertions:

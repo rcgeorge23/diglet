@@ -95,7 +95,12 @@ public class WebTest implements AutoCloseable {
     public enum Browser {
         HTML_UNIT,
         CHROME,
-        FIREFOX
+        FIREFOX,
+        /**
+         * Connects to an externally provisioned Lightpanda instance over Chrome DevTools Protocol.
+         * This mode does not start, stop, install, or download Lightpanda.
+         */
+        LIGHTPANDA
     }
 
     private enum DialogType {
@@ -222,6 +227,7 @@ public class WebTest implements AutoCloseable {
     private HtmlPage htmlPage;
     private boolean currentDocumentIsBrowserPage;
     private WebDriver webDriver;
+    private LightpandaCdpBrowser lightpandaBrowser;
     private boolean pooledDriver;
     private final AtomicBoolean closed = new AtomicBoolean();
     private Document currentDocument;
@@ -579,7 +585,37 @@ public class WebTest implements AutoCloseable {
         this(port, automaticallyFollowRedirects, browser, null);
     }
 
+    /**
+     * Creates a test using an externally provisioned Lightpanda CDP endpoint.
+     *
+     * <p>This constructor is required when {@code browser} is {@link Browser#LIGHTPANDA};
+     * Diglet does not install, start, or stop the Lightpanda process.</p>
+     *
+     * @param port local application port
+     * @param browser browser implementation to use
+     * @param cdpEndpoint HTTP(S) endpoint exposed by an externally started Lightpanda CDP server
+     * @throws IllegalArgumentException when the browser is not LIGHTPANDA or the endpoint is invalid
+     */
+    public WebTest(int port, Browser browser, URI cdpEndpoint) {
+        this(port, false, requireLightpandaBrowser(browser), null, cdpEndpoint);
+    }
+
+    private static Browser requireLightpandaBrowser(Browser browser) {
+        if (browser != Browser.LIGHTPANDA) {
+            throw new IllegalArgumentException("A CDP endpoint can only be used with Browser.LIGHTPANDA");
+        }
+        return browser;
+    }
+
     public WebTest(int port, boolean automaticallyFollowRedirects, Browser browser, Supplier<WebDriver> driverSupplier) {
+        this(port, automaticallyFollowRedirects, browser, driverSupplier, null);
+    }
+
+    private WebTest(int port, boolean automaticallyFollowRedirects, Browser browser,
+            Supplier<WebDriver> driverSupplier, URI cdpEndpoint) {
+        if (browser != Browser.LIGHTPANDA && cdpEndpoint != null) {
+            throw new IllegalArgumentException("A CDP endpoint can only be used with Browser.LIGHTPANDA");
+        }
         this.baseUrl = "http://localhost:" + port;
         this.baseUri = URI.create(baseUrl);
         this.automaticallyFollowRedirects = automaticallyFollowRedirects;
@@ -715,7 +751,9 @@ public class WebTest implements AutoCloseable {
             });
         } else {
             this.console = new BrowserConsole();
-            if (usesWebDriver()) {
+            if (browser == Browser.LIGHTPANDA) {
+                this.lightpandaBrowser = new LightpandaCdpBrowser(cdpEndpoint, console);
+            } else if (usesWebDriver()) {
                 Supplier<WebDriver> supplier = driverSupplier != null ? driverSupplier : defaultDriverSupplier(browser);
                 if (supplier instanceof WebDriverPool pool) {
                     this.pooledDriver = true;
@@ -1121,6 +1159,9 @@ public class WebTest implements AutoCloseable {
     }
 
     private String pageText() {
+        if (browser == Browser.LIGHTPANDA) {
+            return normaliseText(currentDocument == null ? "" : currentDocument.text());
+        }
         if (browser == Browser.HTML_UNIT) {
             if (htmlPage != null) {
                 return normaliseText(htmlPage.getVisibleText());
@@ -1159,6 +1200,16 @@ public class WebTest implements AutoCloseable {
                 actual = ((HtmlInput) liveElement).getValue();
             } else if (usesWebDriver()) {
                 actual = webDriver.findElement(By.cssSelector(selector)).getDomProperty("value");
+            } else if (browser == Browser.LIGHTPANDA) {
+                try {
+                    Object liveValue = lightpandaBrowser.inputValue(selector);
+                    actual = liveValue == null ? null : liveValue.toString();
+                } catch (IOException exception) {
+                    throw new IllegalStateException("Could not read the live Lightpanda input value", exception);
+                } catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException("Interrupted while reading the live Lightpanda input value", exception);
+                }
             } else {
                 actual = element.attr("value");
             }
@@ -1238,6 +1289,11 @@ public class WebTest implements AutoCloseable {
             syncCookiesFromWebDriverToHttpClient();
             return this;
         }
+        if (browser == Browser.LIGHTPANDA) {
+            lightpandaBrowser.navigate(url(path));
+            updateFromLightpandaPage();
+            return this;
+        }
         throw new IllegalStateException("Unsupported browser: " + browser);
     }
 
@@ -1255,6 +1311,19 @@ public class WebTest implements AutoCloseable {
         }
         if (usesWebDriver()) {
             return this; // real browsers follow redirects automatically
+        }
+        if (browser == Browser.LIGHTPANDA) {
+            if (currentDocumentIsBrowserPage || lastResponse == null
+                    || lastResponse.statusCode() < 300 || lastResponse.statusCode() >= 400) {
+                return this;
+            }
+            String location = lastResponse.headers().firstValue("Location").orElse(null);
+            if (location == null || location.isBlank()) {
+                return this;
+            }
+            lightpandaBrowser.navigate(lastResponse.uri().resolve(location).toString());
+            updateFromLightpandaPage();
+            return this;
         }
         throw new IllegalStateException("Unsupported browser: " + browser);
     }
@@ -1369,6 +1438,11 @@ public class WebTest implements AutoCloseable {
             updateFromDriver();
             return this;
         }
+        if (browser == Browser.LIGHTPANDA) {
+            lightpandaBrowser.execute(script);
+            updateFromLightpandaPage();
+            return this;
+        }
         throw new IllegalStateException("Unsupported browser: " + browser);
     }
 
@@ -1398,6 +1472,11 @@ public class WebTest implements AutoCloseable {
         if (usesWebDriver()) {
             Object result = ((JavascriptExecutor) webDriver).executeScript("return (" + script + ");");
             updateFromDriver();
+            return normaliseJavaScriptResult(result);
+        }
+        if (browser == Browser.LIGHTPANDA) {
+            Object result = lightpandaBrowser.evaluate(script, true);
+            updateFromLightpandaPage();
             return normaliseJavaScriptResult(result);
         }
         throw new IllegalStateException("Unsupported browser: " + browser);
@@ -1490,6 +1569,11 @@ public class WebTest implements AutoCloseable {
             updateFromDriver();
             return this;
         }
+        if (browser == Browser.LIGHTPANDA) {
+            lightpandaBrowser.click(selector);
+            updateFromLightpandaPage();
+            return this;
+        }
         throw new IllegalStateException("Unsupported browser: " + browser);
     }
 
@@ -1520,6 +1604,11 @@ public class WebTest implements AutoCloseable {
             updateFromDriver();
             return this;
         }
+        if (browser == Browser.LIGHTPANDA) {
+            lightpandaBrowser.click(selector);
+            updateFromLightpandaPage();
+            return this;
+        }
         throw new IllegalStateException("Unsupported browser: " + browser);
     }
 
@@ -1546,6 +1635,11 @@ public class WebTest implements AutoCloseable {
             el.clear();
             el.sendKeys(value);
             updateFromDriver();
+            return this;
+        }
+        if (browser == Browser.LIGHTPANDA) {
+            lightpandaBrowser.setInputValue(selector, value);
+            updateFromLightpandaPage();
             return this;
         }
 
@@ -1613,6 +1707,11 @@ public class WebTest implements AutoCloseable {
             updateFromDriver();
             return this;
         }
+        if (browser == Browser.LIGHTPANDA) {
+            lightpandaBrowser.typeInto(selector, text);
+            updateFromLightpandaPage();
+            return this;
+        }
 
         throw new IllegalStateException("Unsupported browser: " + browser);
     }
@@ -1624,6 +1723,9 @@ public class WebTest implements AutoCloseable {
     public WebTest waitFor(Predicate<Document> condition, Duration timeout) throws IOException, InterruptedException {
         long deadline = System.currentTimeMillis() + timeout.toMillis();
         while (System.currentTimeMillis() < deadline) {
+            if (browser == Browser.LIGHTPANDA && currentDocumentIsBrowserPage) {
+                updateFromLightpandaPage();
+            }
             if (browser == Browser.HTML_UNIT && currentDocumentIsBrowserPage && htmlPage != null) {
                 renderedHtml = serialiseHtmlPage();
                 String pageUrl = htmlPage.getUrl() == null ? null : htmlPage.getUrl().toString();
@@ -1635,6 +1737,9 @@ public class WebTest implements AutoCloseable {
             if (condition.test(currentDocument)) {
                 checkForJavascriptErrors();
                 return this;
+            }
+            if (browser == Browser.LIGHTPANDA) {
+                Thread.sleep(50);
             }
             if (browser == Browser.HTML_UNIT) {
                 if (currentDocumentIsBrowserPage) {
@@ -1651,6 +1756,11 @@ public class WebTest implements AutoCloseable {
         if (browser == Browser.HTML_UNIT) {
             Page page = htmlClient.getPage(url(path));
             updateFromPage(page);
+            return this;
+        }
+        if (browser == Browser.LIGHTPANDA) {
+            lightpandaBrowser.navigate(url(path));
+            updateFromLightpandaPage();
             return this;
         }
         HttpRequest request = HttpRequest.newBuilder()
@@ -1744,6 +1854,22 @@ public class WebTest implements AutoCloseable {
         updateFromPage(currentWindow.getEnclosedPage());
     }
 
+    private void updateFromLightpandaPage() throws IOException, InterruptedException {
+        Map<String, Object> snapshot = lightpandaBrowser.pageSnapshot();
+        Object html = snapshot.get("html");
+        Object url = snapshot.get("url");
+        renderedHtml = html == null ? "" : html.toString();
+        if (url != null) {
+            currentUrl = url.toString();
+        }
+        currentDocument = parseDocument(renderedHtml, currentUrl);
+        currentDocumentIsBrowserPage = true;
+        lastResponse = null;
+        lastWebResponse = null;
+        lastStatusIsAvailable = false;
+        checkForJavascriptErrors();
+    }
+
     private void updateFromPage(Page page) {
         this.htmlPage = page instanceof HtmlPage ? (HtmlPage) page : null;
         currentDocumentIsBrowserPage = htmlPage != null;
@@ -1831,6 +1957,10 @@ public class WebTest implements AutoCloseable {
             webDriver = null;
         }
 
+        if (lightpandaBrowser != null) {
+            lightpandaBrowser.close();
+            lightpandaBrowser = null;
+        }
         console = null;
         htmlPage = null;
         currentDocumentIsBrowserPage = false;
