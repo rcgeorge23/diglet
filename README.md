@@ -158,6 +158,48 @@ synchronization with Diglet's direct JDK HTTP client, and Diglet's JavaScript di
 API are not available in this mode. Keep Chrome/Firefox tests for behavior that depends on those
 capabilities or real-browser layout.
 
+## Embedded Lightpanda mode
+
+`Browser.EMBEDDED_LIGHTPANDA` runs Lightpanda in-process through the Java FFM
+binding; it does not use the external CDP server required by
+`Browser.LIGHTPANDA`. The binding and native library are opt-in: Diglet keeps
+`lightpanda-java` out of its runtime dependencies because that binding and
+Lightpanda are AGPL-3.0. Add a compatible published binding version to the
+application test runtime and make the native shared library available through
+`-Dlightpanda.library=/path/to/liblightpanda.so` or `LIGHTPANDA_LIBRARY`.
+
+```kotlin
+dependencies {
+    testRuntimeOnly("io.github.rcgeorge23:lightpanda-java:<published-version>")
+}
+```
+
+The version must include the `Session.pump()` API used to progress timers and
+asynchronous work. Calls into the native library are serialized on one
+JVM-wide owner thread; each `WebTest` gets an isolated session. `waitFor`
+pumps Lightpanda between DOM polls. Embedded mode does not provide CDP console
+error reporting, geometry/layout, browser navigation response status, or
+dialog parity; retain CDP/Chrome/Firefox tests for behavior that needs those
+capabilities.
+
+The native integration test is opt-in and does not run as part of `test`,
+`check`, or `build`. On Linux x86_64, install Zig 0.16.0 and Rust, then build
+the pinned upstream C API and run the test:
+
+```sh
+./gradle/build-lightpanda-c-api.sh
+./gradlew embeddedLightpandaTest \
+  -PlightpandaLibrary="$HOME/.cache/diglet/lightpanda-c-api/zig-out/lib/liblightpanda.so"
+```
+
+The helper pins upstream PR #3096 at
+`bbcc2f795d23d891dbbcd84f48773ea9be07fb63` and builds with `ReleaseFast`.
+The default Debug build requires static TLS and cannot be loaded into an
+already-running JVM on Linux; the ReleaseFast library has been verified to
+late-load without `LD_PRELOAD`. Current end-to-end verification covers Linux
+x86_64 with JDK 25. The upstream C API is still a draft, so pin changes and
+additional platforms require separate validation.
+
 ## Selenium WebDriver test support
 
 Diglet also provides optional, lifecycle-free Selenium helpers in

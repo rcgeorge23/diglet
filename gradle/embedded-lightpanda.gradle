@@ -1,0 +1,49 @@
+def lightpandaJavaVersion = providers.gradleProperty('lightpandaJavaVersion').get()
+
+sourceSets {
+    embeddedLightpandaTest {
+        compileClasspath += sourceSets.main.output
+        runtimeClasspath += sourceSets.main.output
+    }
+}
+
+configurations {
+    embeddedLightpandaTestImplementation.extendsFrom(testImplementation)
+    embeddedLightpandaTestRuntimeOnly.extendsFrom(testRuntimeOnly)
+    embeddedLightpandaTestCompileOnly.extendsFrom(testCompileOnly)
+    embeddedLightpandaTestAnnotationProcessor.extendsFrom(testAnnotationProcessor)
+}
+
+dependencies {
+    // Keep the AGPL-licensed binding opt-in at runtime for Diglet consumers.
+    compileOnly "io.github.rcgeorge23:lightpanda-java:${lightpandaJavaVersion}"
+    embeddedLightpandaTestRuntimeOnly "io.github.rcgeorge23:lightpanda-java:${lightpandaJavaVersion}"
+}
+
+def lightpandaLibrary = providers.gradleProperty('lightpandaLibrary')
+        .orElse(providers.environmentVariable('LIGHTPANDA_LIBRARY'))
+
+tasks.register('embeddedLightpandaTest', Test) {
+    description = 'Runs opt-in in-process Lightpanda integration tests against liblightpanda.'
+    group = 'verification'
+    testClassesDirs = sourceSets.embeddedLightpandaTest.output.classesDirs
+    classpath = sourceSets.embeddedLightpandaTest.runtimeClasspath
+    useJUnitPlatform()
+    jvmArgs '--enable-native-access=ALL-UNNAMED', '--add-modules=jdk.httpserver'
+
+    if (lightpandaLibrary.isPresent()) {
+        systemProperty 'lightpanda.library', lightpandaLibrary.get()
+    }
+
+    doFirst {
+        if (!lightpandaLibrary.isPresent()) {
+            throw new GradleException(
+                    'Set -PlightpandaLibrary=/absolute/path/to/liblightpanda.so or LIGHTPANDA_LIBRARY before running embeddedLightpandaTest.')
+        }
+        def libraryFile = project.file(lightpandaLibrary.get())
+        if (!libraryFile.isFile()) {
+            throw new GradleException("Lightpanda native library does not exist: ${libraryFile}")
+        }
+        systemProperty 'lightpanda.library', libraryFile.absolutePath
+    }
+}

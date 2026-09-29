@@ -25,7 +25,12 @@ import java.util.concurrent.atomic.AtomicLong;
  * Small CDP adapter for an externally managed Lightpanda process. It owns the page target and
  * WebSocket it creates, but deliberately never starts or stops the Lightpanda process.
  */
-final class LightpandaCdpBrowser implements AutoCloseable {
+final class LightpandaCdpBrowser implements LightpandaPage {
+    @Override
+    public long pumpAndSuggestDelayMillis() {
+        return 50L;
+    }
+
     private static final Duration COMMAND_TIMEOUT = Duration.ofSeconds(20);
     private static final Duration LOAD_TIMEOUT = Duration.ofSeconds(30);
 
@@ -61,7 +66,7 @@ final class LightpandaCdpBrowser implements AutoCloseable {
         return endpoint;
     }
 
-    void navigate(String url) throws IOException, InterruptedException {
+    public void navigate(String url) throws IOException, InterruptedException {
         ensureConnected();
         CompletableFuture<Void> load = new CompletableFuture<>();
         pendingLoad = load;
@@ -85,7 +90,7 @@ final class LightpandaCdpBrowser implements AutoCloseable {
         }
     }
 
-    Map<String, Object> pageSnapshot() throws IOException, InterruptedException {
+    public Map<String, Object> pageSnapshot() throws IOException, InterruptedException {
         Object value = evaluate("({html: document.documentElement ? document.documentElement.outerHTML : '', url: location.href})", true);
         if (!(value instanceof Map<?, ?>)) {
             throw new IOException("Lightpanda did not return the current page snapshot");
@@ -93,7 +98,7 @@ final class LightpandaCdpBrowser implements AutoCloseable {
         return objectMap(value);
     }
 
-    Object evaluate(String expression, boolean awaitPromise) throws IOException, InterruptedException {
+    public Object evaluate(String expression, boolean awaitPromise) throws IOException, InterruptedException {
         Map<String, Object> response = evaluateResponse(expression, awaitPromise);
         Map<String, Object> result = objectMap(response.get("result"));
         if (result.containsKey("value")) {
@@ -107,18 +112,18 @@ final class LightpandaCdpBrowser implements AutoCloseable {
                 "Unsupported JavaScript result type; return a primitive, array, or plain object instead");
     }
 
-    void execute(String script) throws IOException, InterruptedException {
+    public void execute(String script) throws IOException, InterruptedException {
         evaluateResponse(script, false);
     }
 
-    void click(String selector) throws IOException, InterruptedException {
+    public void click(String selector) throws IOException, InterruptedException {
         String selectorLiteral = json.toJson(selector);
         execute("(() => { const element = document.querySelector(" + selectorLiteral + ");"
                 + "if (!element) throw new Error('No element matches selector: ' + " + selectorLiteral + ");"
                 + "element.click(); })();");
     }
 
-    void setInputValue(String selector, String value) throws IOException, InterruptedException {
+    public void setInputValue(String selector, String value) throws IOException, InterruptedException {
         String selectorLiteral = json.toJson(selector);
         String valueLiteral = json.toJson(value);
         execute("(() => { const element = document.querySelector(" + selectorLiteral + ");"
@@ -127,7 +132,7 @@ final class LightpandaCdpBrowser implements AutoCloseable {
                 + "element.dispatchEvent(new Event('input', { bubbles: true })); })();");
     }
 
-    void typeInto(String selector, String text) throws IOException, InterruptedException {
+    public void typeInto(String selector, String text) throws IOException, InterruptedException {
         String selectorLiteral = json.toJson(selector);
         String textLiteral = json.toJson(text);
         execute("(() => { const element = document.querySelector(" + selectorLiteral + ");"
@@ -143,7 +148,7 @@ final class LightpandaCdpBrowser implements AutoCloseable {
                 + "} element.dispatchEvent(new Event('change', { bubbles: true })); element.blur(); })();");
     }
 
-    Object inputValue(String selector) throws IOException, InterruptedException {
+    public Object inputValue(String selector) throws IOException, InterruptedException {
         String selectorLiteral = json.toJson(selector);
         return evaluate("(() => { const element = document.querySelector(" + selectorLiteral + ");"
                 + "if (!element) throw new Error('No element matches selector: ' + " + selectorLiteral + ");"

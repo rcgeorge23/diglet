@@ -100,7 +100,13 @@ public class WebTest implements AutoCloseable {
          * Connects to an externally provisioned Lightpanda instance over Chrome DevTools Protocol.
          * This mode does not start, stop, install, or download Lightpanda.
          */
-        LIGHTPANDA
+        LIGHTPANDA,
+
+        /**
+         * Runs Lightpanda in-process using its native embedding API.
+         * Requires an explicitly supplied liblightpanda shared library.
+         */
+        EMBEDDED_LIGHTPANDA
     }
 
     private enum DialogType {
@@ -227,7 +233,7 @@ public class WebTest implements AutoCloseable {
     private HtmlPage htmlPage;
     private boolean currentDocumentIsBrowserPage;
     private WebDriver webDriver;
-    private LightpandaCdpBrowser lightpandaBrowser;
+    private LightpandaPage lightpandaBrowser;
     private boolean pooledDriver;
     private final AtomicBoolean closed = new AtomicBoolean();
     private Document currentDocument;
@@ -426,6 +432,10 @@ public class WebTest implements AutoCloseable {
         return browser == Browser.CHROME || browser == Browser.FIREFOX;
     }
 
+    private boolean usesLightpandaPage() {
+        return browser == Browser.LIGHTPANDA || browser == Browser.EMBEDDED_LIGHTPANDA;
+    }
+
     /**
      * Expect the next JavaScript alert. Alerts are accepted by default.
      *
@@ -575,6 +585,16 @@ public class WebTest implements AutoCloseable {
 
     public WebTest(int port) {
         this(port, false, Browser.HTML_UNIT);
+    }
+
+    /**
+     * Creates a test with a browser mode that does not need an external CDP endpoint.
+     *
+     * @param port the port used for requests to the application under test
+     * @param browser the browser mode to use
+     */
+    public WebTest(int port, Browser browser) {
+        this(port, false, browser);
     }
 
     public WebTest(int port, boolean automaticallyFollowRedirects) {
@@ -753,6 +773,8 @@ public class WebTest implements AutoCloseable {
             this.console = new BrowserConsole();
             if (browser == Browser.LIGHTPANDA) {
                 this.lightpandaBrowser = new LightpandaCdpBrowser(cdpEndpoint, console);
+            } else if (browser == Browser.EMBEDDED_LIGHTPANDA) {
+                this.lightpandaBrowser = EmbeddedLightpandaRuntime.instance().openPage();
             } else if (usesWebDriver()) {
                 Supplier<WebDriver> supplier = driverSupplier != null ? driverSupplier : defaultDriverSupplier(browser);
                 if (supplier instanceof WebDriverPool pool) {
@@ -1159,7 +1181,7 @@ public class WebTest implements AutoCloseable {
     }
 
     private String pageText() {
-        if (browser == Browser.LIGHTPANDA) {
+        if (usesLightpandaPage()) {
             return normaliseText(currentDocument == null ? "" : currentDocument.text());
         }
         if (browser == Browser.HTML_UNIT) {
@@ -1200,7 +1222,7 @@ public class WebTest implements AutoCloseable {
                 actual = ((HtmlInput) liveElement).getValue();
             } else if (usesWebDriver()) {
                 actual = webDriver.findElement(By.cssSelector(selector)).getDomProperty("value");
-            } else if (browser == Browser.LIGHTPANDA) {
+            } else if (usesLightpandaPage()) {
                 try {
                     Object liveValue = lightpandaBrowser.inputValue(selector);
                     actual = liveValue == null ? null : liveValue.toString();
@@ -1289,7 +1311,7 @@ public class WebTest implements AutoCloseable {
             syncCookiesFromWebDriverToHttpClient();
             return this;
         }
-        if (browser == Browser.LIGHTPANDA) {
+        if (usesLightpandaPage()) {
             lightpandaBrowser.navigate(url(path));
             updateFromLightpandaPage();
             return this;
@@ -1312,7 +1334,7 @@ public class WebTest implements AutoCloseable {
         if (usesWebDriver()) {
             return this; // real browsers follow redirects automatically
         }
-        if (browser == Browser.LIGHTPANDA) {
+        if (usesLightpandaPage()) {
             if (currentDocumentIsBrowserPage || lastResponse == null
                     || lastResponse.statusCode() < 300 || lastResponse.statusCode() >= 400) {
                 return this;
@@ -1438,7 +1460,7 @@ public class WebTest implements AutoCloseable {
             updateFromDriver();
             return this;
         }
-        if (browser == Browser.LIGHTPANDA) {
+        if (usesLightpandaPage()) {
             lightpandaBrowser.execute(script);
             updateFromLightpandaPage();
             return this;
@@ -1474,7 +1496,7 @@ public class WebTest implements AutoCloseable {
             updateFromDriver();
             return normaliseJavaScriptResult(result);
         }
-        if (browser == Browser.LIGHTPANDA) {
+        if (usesLightpandaPage()) {
             Object result = lightpandaBrowser.evaluate(script, true);
             updateFromLightpandaPage();
             return normaliseJavaScriptResult(result);
@@ -1569,7 +1591,7 @@ public class WebTest implements AutoCloseable {
             updateFromDriver();
             return this;
         }
-        if (browser == Browser.LIGHTPANDA) {
+        if (usesLightpandaPage()) {
             lightpandaBrowser.click(selector);
             updateFromLightpandaPage();
             return this;
@@ -1604,7 +1626,7 @@ public class WebTest implements AutoCloseable {
             updateFromDriver();
             return this;
         }
-        if (browser == Browser.LIGHTPANDA) {
+        if (usesLightpandaPage()) {
             lightpandaBrowser.click(selector);
             updateFromLightpandaPage();
             return this;
@@ -1637,7 +1659,7 @@ public class WebTest implements AutoCloseable {
             updateFromDriver();
             return this;
         }
-        if (browser == Browser.LIGHTPANDA) {
+        if (usesLightpandaPage()) {
             lightpandaBrowser.setInputValue(selector, value);
             updateFromLightpandaPage();
             return this;
@@ -1707,7 +1729,7 @@ public class WebTest implements AutoCloseable {
             updateFromDriver();
             return this;
         }
-        if (browser == Browser.LIGHTPANDA) {
+        if (usesLightpandaPage()) {
             lightpandaBrowser.typeInto(selector, text);
             updateFromLightpandaPage();
             return this;
@@ -1723,7 +1745,7 @@ public class WebTest implements AutoCloseable {
     public WebTest waitFor(Predicate<Document> condition, Duration timeout) throws IOException, InterruptedException {
         long deadline = System.currentTimeMillis() + timeout.toMillis();
         while (System.currentTimeMillis() < deadline) {
-            if (browser == Browser.LIGHTPANDA && currentDocumentIsBrowserPage) {
+            if (usesLightpandaPage() && currentDocumentIsBrowserPage) {
                 updateFromLightpandaPage();
             }
             if (browser == Browser.HTML_UNIT && currentDocumentIsBrowserPage && htmlPage != null) {
@@ -1738,8 +1760,9 @@ public class WebTest implements AutoCloseable {
                 checkForJavascriptErrors();
                 return this;
             }
-            if (browser == Browser.LIGHTPANDA) {
-                Thread.sleep(50);
+            if (usesLightpandaPage()) {
+                long delayMillis = lightpandaBrowser.pumpAndSuggestDelayMillis();
+                Thread.sleep(Math.max(1L, Math.min(50L, delayMillis)));
             }
             if (browser == Browser.HTML_UNIT) {
                 if (currentDocumentIsBrowserPage) {
@@ -1758,7 +1781,7 @@ public class WebTest implements AutoCloseable {
             updateFromPage(page);
             return this;
         }
-        if (browser == Browser.LIGHTPANDA) {
+        if (usesLightpandaPage()) {
             lightpandaBrowser.navigate(url(path));
             updateFromLightpandaPage();
             return this;
