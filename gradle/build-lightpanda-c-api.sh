@@ -29,11 +29,11 @@ if [[ ! -d "${source_directory}/.git" ]]; then
     git clone --filter=blob:none --no-checkout "$upstream_repository" "$source_directory" >&2
 fi
 
-git -C "$source_directory" fetch --no-tags --depth=1 origin "refs/pull/${upstream_pull_request}/head" >&2
-resolved_revision="$(git -C "$source_directory" rev-parse FETCH_HEAD)"
+git -C "$source_directory" fetch --no-tags --depth=1 origin "$upstream_revision" >&2
+resolved_revision="$(git -C "$source_directory" rev-parse "$upstream_revision")"
 if [[ "$resolved_revision" != "$upstream_revision" ]]; then
-    printf 'Upstream PR #%s moved: expected %s, received %s. Review and update the pinned revision.\n' \
-        "$upstream_pull_request" "$upstream_revision" "$resolved_revision" >&2
+    printf 'Resolved upstream revision %s does not match the pinned revision %s (from PR #%s).\n' \
+        "$resolved_revision" "$upstream_revision" "$upstream_pull_request" >&2
     exit 1
 fi
 
