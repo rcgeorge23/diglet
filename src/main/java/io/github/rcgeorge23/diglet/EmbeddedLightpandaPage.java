@@ -1,9 +1,11 @@
 package io.github.rcgeorge23.diglet;
 
+import io.lightpanda.spike.EmbeddedLightpanda.ConsoleMessage;
 import org.openqa.selenium.json.Json;
 
 import java.io.IOException;
 import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -26,7 +28,8 @@ final class EmbeddedLightpandaPage implements LightpandaPage {
 
     @Override
     public Map<String, Object> pageSnapshot() throws IOException, InterruptedException {
-        Object result = evaluate("({html: document.documentElement?.outerHTML ?? '', url: location.href})", true);
+        Object result = evaluate("({html: document.documentElement?.outerHTML ?? '', url: location.href,"
+                + " captureInstalled: window.__lightpandaJavaErrorCaptureInstalled === true})", true);
         if (!(result instanceof Map<?, ?> map)) {
             throw new IllegalStateException("Embedded Lightpanda returned an invalid page snapshot: " + result);
         }
@@ -34,6 +37,9 @@ final class EmbeddedLightpandaPage implements LightpandaPage {
         Map<String, Object> snapshot = new LinkedHashMap<>();
         snapshot.put("html", map.get("html"));
         snapshot.put("url", map.get("url"));
+        if (!Boolean.TRUE.equals(map.get("captureInstalled"))) {
+            installJavascriptErrorCapture();
+        }
         return snapshot;
     }
 
@@ -77,6 +83,29 @@ final class EmbeddedLightpandaPage implements LightpandaPage {
     public long pumpAndSuggestDelayMillis() throws IOException, InterruptedException {
         ensureOpen();
         return runtime.pump(sessionId);
+    }
+
+    @Override
+    public void installJavascriptErrorCapture() throws IOException, InterruptedException {
+        ensureOpen();
+        runtime.installJavascriptErrorCapture(sessionId);
+    }
+
+    @Override
+    public void drainConsoleMessages(BrowserConsole console) throws IOException, InterruptedException {
+        ensureOpen();
+        for (ConsoleMessage message : runtime.drainConsoleMessages(sessionId)) {
+            if (message.isJavascriptError()) {
+                console.getErrors().add("Lightpanda JavaScript error: " + message.text());
+            } else if (message.type() == ConsoleMessage.Type.FATAL) {
+                console.getErrors().add("Lightpanda console.fatal: " + message.text());
+            } else if (message.isErrorLevel()) {
+                console.getErrors().add("Lightpanda console.error: " + message.text());
+            } else {
+                console.getLogs().add("Lightpanda console."
+                        + message.type().name().toLowerCase(Locale.ROOT) + ": " + message.text());
+            }
+        }
     }
 
     @Override

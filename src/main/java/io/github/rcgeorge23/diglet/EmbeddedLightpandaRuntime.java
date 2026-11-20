@@ -6,6 +6,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
@@ -69,6 +70,18 @@ final class EmbeddedLightpandaRuntime {
 
     long pump(long sessionId) throws IOException, InterruptedException {
         return onOwner(() -> session(sessionId).pump());
+    }
+
+    void installJavascriptErrorCapture(long sessionId) throws IOException, InterruptedException {
+        onOwner(() -> {
+            session(sessionId).installJavascriptErrorCapture();
+            return null;
+        });
+    }
+
+    List<EmbeddedLightpanda.ConsoleMessage> drainConsoleMessages(long sessionId)
+            throws IOException, InterruptedException {
+        return onOwner(() -> session(sessionId).drainConsoleMessages());
     }
 
     void closeSession(long sessionId) {

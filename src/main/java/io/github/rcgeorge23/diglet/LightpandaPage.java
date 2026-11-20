@@ -29,6 +29,19 @@ interface LightpandaPage extends AutoCloseable {
     /** Advances pending browser work and returns the suggested delay before polling again. */
     long pumpAndSuggestDelayMillis() throws IOException, InterruptedException;
 
+    /**
+     * Ensures the current document reports uncaught JavaScript errors and unhandled promise
+     * rejections through the page console. Implementations that receive native events may do
+     * nothing.
+     */
+    void installJavascriptErrorCapture() throws IOException, InterruptedException;
+
+    /**
+     * Drains diagnostics recorded since the previous drain into the supplied console.
+     * Implementations that record events asynchronously may do nothing.
+     */
+    void drainConsoleMessages(BrowserConsole console) throws IOException, InterruptedException;
+
     @Override
     void close();
 }

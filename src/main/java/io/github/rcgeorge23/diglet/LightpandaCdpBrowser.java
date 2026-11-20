@@ -31,6 +31,16 @@ final class LightpandaCdpBrowser implements LightpandaPage {
         return 50L;
     }
 
+    @Override
+    public void installJavascriptErrorCapture() {
+        // Runtime.exceptionThrown and Runtime.consoleAPICalled already provide these events.
+    }
+
+    @Override
+    public void drainConsoleMessages(BrowserConsole console) {
+        // The CDP listener records diagnostics asynchronously as events arrive.
+    }
+
     private static final Duration COMMAND_TIMEOUT = Duration.ofSeconds(20);
     private static final Duration LOAD_TIMEOUT = Duration.ofSeconds(30);
 

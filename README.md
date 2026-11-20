@@ -174,13 +174,21 @@ dependencies {
 }
 ```
 
-The version must include the `Session.pump()` API used to progress timers and
-asynchronous work. Calls into the native library are serialized on one
-JVM-wide owner thread; each `WebTest` gets an isolated session. `waitFor`
-pumps Lightpanda between DOM polls. Embedded mode does not provide CDP console
-error reporting, geometry/layout, browser navigation response status, or
-dialog parity; retain CDP/Chrome/Firefox tests for behavior that needs those
-capabilities.
+The version must include the session pump and console diagnostics APIs:
+`Session.pump()`, `Session.drainConsoleMessages()` and
+`Session.installJavascriptErrorCapture()`. Calls into the native library are
+serialized on one JVM-wide owner thread; each `WebTest` gets an isolated
+session. `waitFor` pumps Lightpanda between DOM polls.
+
+Embedded mode collects `console.error` output and installs a page-level listener
+that forwards uncaught errors and unhandled promise rejections to the same
+`javascriptErrors()` collection used by HtmlUnit and CDP modes. By default a
+collected error fails the test; call `ignoreJavascriptErrors()` to continue while
+keeping the diagnostics queryable. The listener is installed after navigation,
+so it cannot observe errors raised during the initial page load and does not see
+errors inside iframes or workers. Embedded mode also does not provide
+geometry/layout, browser navigation response status, or dialog parity; retain
+CDP/Chrome/Firefox tests for behavior that needs those capabilities.
 
 The native integration test is opt-in and does not run as part of `test`,
 `check`, or `build`. On Linux x86_64, install Zig 0.16.0 and Rust, then build

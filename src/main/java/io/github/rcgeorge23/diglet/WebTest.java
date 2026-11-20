@@ -1890,6 +1890,7 @@ public class WebTest implements AutoCloseable {
         lastResponse = null;
         lastWebResponse = null;
         lastStatusIsAvailable = false;
+        lightpandaBrowser.drainConsoleMessages(console);
         checkForJavascriptErrors();
     }
 
