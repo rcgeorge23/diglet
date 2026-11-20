@@ -4,6 +4,7 @@ set -euo pipefail
 readonly upstream_repository="https://github.com/lightpanda-io/browser.git"
 readonly upstream_revision="bbcc2f795d23d891dbbcd84f48773ea9be07fb63"
 readonly upstream_pull_request="3096"
+readonly required_zig_version="0.16.0"
 
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source_directory="${LIGHTPANDA_SOURCE_DIR:-${HOME}/.cache/diglet/lightpanda-c-api}"
@@ -19,6 +20,13 @@ for tool in cargo curl git make readelf zig; do
         exit 1
     fi
 done
+
+installed_zig_version="$(zig version)"
+if [[ "$installed_zig_version" != "$required_zig_version" ]]; then
+    printf 'Zig %s is required to build Lightpanda but %s is installed.\n' \
+        "$required_zig_version" "$installed_zig_version" >&2
+    exit 1
+fi
 
 if [[ ! -d "${source_directory}/.git" ]]; then
     if [[ -e "$source_directory" ]]; then
