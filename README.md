@@ -1,198 +1,323 @@
 # Diglet
 
-Diglet is a lightweight, fluent Java library for exercising HTTP endpoints and server-rendered HTML
-pages in tests without needing a real browser. It is useful for end-to-end testing of web
-applications: navigate, fill in and submit forms, follow redirects, run page JavaScript, and assert
-on the resulting DOM.
+**Fast browser-like integration tests for Java web applications.**
 
-It builds on the JDK `HttpClient`, parses HTML with [jsoup](https://jsoup.org/) and executes
-JavaScript using the in-process [HtmlUnit](https://www.htmlunit.org/) browser engine. For more
-realistic end-to-end tests, Diglet can also drive real browsers via Selenium by selecting
-`WebTest.Browser.CHROME` or `WebTest.Browser.FIREFOX`, or by supplying a custom `WebDriver`
-supplier.
+Diglet lets Java tests send HTTP requests, navigate server-rendered pages, complete forms, execute page JavaScript, and assert on the resulting DOM through one fluent API. It uses [HtmlUnit](https://www.htmlunit.org/) in process by default, so most tests do **not** need Chrome, a browser driver, or an external service.
 
-## Requirements
+Use the same `WebTest` API with Selenium-driven Chrome or Firefox when you need real browser behaviour. Optional Lightpanda backends are available for more specialised workloads.
 
-* Java 25 or newer
-* Gradle or Maven
+- **Works with any HTTP-served application** — no Spring Boot, Micronaut, or other framework integration is required.
+- **Test the complete request/response flow** — including cookies, redirects, forms, resource loading, and JavaScript-driven UI changes.
+- **Prefer fast tests; opt into browser fidelity** — keep the bulk of a suite in HtmlUnit and run selected flows in Chrome/Firefox.
+- **Buildable from source** — Java 25, Gradle wrapper, and local test fixtures.
 
-## Installation
+## Get started
 
-Gradle:
+### 1. Add the test dependency
+
+Requirements: **JDK 25 or newer**, Maven Central, and an application or local HTTP fixture to exercise.
+
+Use the latest published `io.github.rcgeorge23:diglet` version from [Maven Central](https://central.sonatype.com/artifact/io.github.rcgeorge23/diglet). The repository's [`gradle.properties`](gradle.properties) records the current source version; a source version is not necessarily published yet.
+
+**Gradle (Groovy DSL)**
 
 ```groovy
-testImplementation 'io.github.rcgeorge23:diglet:0.1.0'
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    testImplementation 'io.github.rcgeorge23:diglet:REPLACE_WITH_PUBLISHED_VERSION'
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.12.2'
+}
+
+test {
+    useJUnitPlatform()
+}
 ```
 
-Maven:
+**Gradle (Kotlin DSL)**
+
+```kotlin
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    testImplementation("io.github.rcgeorge23:diglet:REPLACE_WITH_PUBLISHED_VERSION")
+    testImplementation("org.junit.jupiter:junit-jupiter:5.12.2")
+}
+
+tasks.test {
+    useJUnitPlatform()
+}
+```
+
+**Maven**
 
 ```xml
 <dependency>
     <groupId>io.github.rcgeorge23</groupId>
     <artifactId>diglet</artifactId>
-    <version>0.1.0</version>
+    <version>REPLACE_WITH_PUBLISHED_VERSION</version>
     <scope>test</scope>
 </dependency>
 ```
 
-## Capabilities
+Configure JUnit 5 in your application's build as usual. Diglet exposes the web-testing API; it does not start your application or manage your test server.
 
-- Navigate to pages and inspect the response with `navigateTo`.
-- Drive headless Chrome or Firefox via Selenium by selecting `WebTest.Browser.CHROME` or
-  `WebTest.Browser.FIREFOX`.
-- Reuse one browser process across tests with `WebDriverPool`, which clears cookies and web storage
-  between uses so real-browser suites stay fast and isolated.
-- Reuse one browser process across tests with `WebDriverPool` to avoid per-test browser startup;
-  cookies and web storage are cleared between tests.
-- Assert status codes and redirects via methods such as `assertStatusIs`, `assertRedirectIs` and
-  `assertRedirectEndsWith`.
-- Interact with the DOM:
-  - Submit forms by id or CSS selector, including file uploads, using `submitForm` /
-    `submitFormBySelector`. These behave like a user submitting the form in a browser: the submit
-    event fires (so page JavaScript handlers and AJAX flows run) and the browser's constraint
-    validation is enforced.
-  - Submit forms while bypassing client-side validation and submit handlers (equivalent to calling
-    `form.submit()` from JavaScript) using `forceSubmitForm` / `forceSubmitFormBySelector`, for
-    tests that exercise server-side validation of input a browser would refuse to submit.
-  - Click links and buttons with `click`. Clicking an element that is hidden or disabled fails the
-  test like a real browser would; use `forceClick` to click such an element explicitly.
-  - Set input values and trigger the `input` event with `setInputValue`, or replace text using
-    browser keyboard events and trigger commit handlers with `typeInto`.
-  - Wait for asynchronous DOM changes with `waitFor`.
-  - Execute JavaScript snippets with `executeScript` and access resulting DOM changes.
-  - Evaluate JavaScript expressions and capture their return values with `evaluateScript`.
-- Verify page content using helpers like `assertThatPageTitleIs`, `assertPageBodyContains`,
-  `assertFormFieldValue` and `assertThatElementWithIdIsPresent`.
-- `assertFormFieldValue` checks the live value property for inputs in a browser page, so it sees
-  values changed by `setInputValue` or JavaScript even when the original HTML `value` attribute is
-  unchanged. Textareas continue to use their serialized text content.
-- Verify visible page text with `assertPageTextContains` / `assertPageTextDoesNotContain`; use the
-  raw-HTML `assertPageBodyContains` / `assertPageBodyDoesNotContain` when you need to match markup,
-  comments or script content that a user would not see.
-- Follow redirects explicitly with `followRedirect` or configure automatic redirect following when
-  constructing the class.
-- Send JSON or form-encoded POST requests directly using `postJson` and `postForm`.
-- Access the raw response body with `body()` for parsing JSON or other content types.
-- Retrieve the HTTP status code of the last response using `status()`.
-- Automatically load external scripts and images referenced by the page, and fail the test if any
-  resource or script fails to load, a script throws, or a script logs to `console.error`. Use
-  `ignoreJavascriptErrors()` to opt out and `javascriptErrors()` to inspect the collected errors.
-- Fill common Web API gaps in HtmlUnit mode with built-in shims (`queueMicrotask`, `structuredClone`,
-  `requestIdleCallback`/`cancelIdleCallback`, `ResizeObserver` and the `Symbol` polyfill) so more
-  modern page scripts run without a real browser.
-- Support the `fetch` API (including method, headers and body options) within page JavaScript,
-  enabling tests to trigger AJAX-driven UI updates.
+### 2. Write a test against your application
 
-## HtmlUnit JavaScript compatibility
-
-HtmlUnit does not implement every modern JavaScript feature. In `Browser.HTML_UNIT` mode, Diglet
-detects common ES class and `async`/`await` syntax in inline and external scripts, as well as
-`<script type="module">`, and fails with a diagnostic that identifies the source and recommends
-`Browser.CHROME` or `Browser.FIREFOX`. This is targeted detection, not a complete ECMAScript parser.
-
-Use a real browser for flows that depend on those features. If JavaScript errors are irrelevant to a
-server-rendered test, `ignoreJavascriptErrors()` lets navigation continue and `javascriptErrors()`
-still exposes the diagnostics; it does not make unsupported scripts execute. Use
-`withJavaScriptEnabled(false)` when a test intentionally needs only the server-rendered markup.
-
-`evaluateScript(expression)` returns a `JsValue` in both browser modes. Its `asObject()` method
-exposes Java values rather than engine-specific wrappers: numbers are `Double`, booleans are
-`Boolean`, strings are `String`, JavaScript `null` and `undefined` are `null`, arrays are recursively
-converted to `List<Object>`, and plain objects to `Map<String, Object>`. Returning a DOM node,
-function, or another non-plain JavaScript object throws `IllegalArgumentException` instead of
-exposing a browser-engine object. Use `executeScript` for side-effect-only scripts, including ones
-that start asynchronous work; use `evaluateScript` when you need a supported return value.
-
-`submitForm` and `submitFormBySelector` fire the submit event and honour constraint validation, so
-page JavaScript validation, AJAX submit handlers and `preventDefault` behave as they would in a
-browser. Use `forceSubmitForm` or `forceSubmitFormBySelector` to bypass both (as a JavaScript
-`form.submit()` call would) when a test needs to reach server-side validation of input the browser
-would normally block.
-
-## JavaScript dialogs
-
-Declare the next dialog before triggering the action. Expectations accept dialogs by default; use
-`dismiss()` for a confirmation or prompt, or `sendKeys()` to answer a prompt:
+Assume your application is running on `localhost:8080` and exposes a `GET /login` page with a form `id="loginForm"`. Submitting the form returns a page containing `Welcome, alice`:
 
 ```java
-var confirmation = webTest.expectConfirm().dismiss();
-webTest.click("#remove");
-assertThat(confirmation.getText()).isEqualTo("Remove this item?");
+import io.github.rcgeorge23.diglet.WebTest;
+import org.junit.jupiter.api.Test;
 
-var prompt = webTest.expectPrompt().sendKeys("Ada");
-webTest.click("#rename");
-assertThat(prompt.getText()).isEqualTo("New name?");
-```
+import java.util.Map;
 
-`expectAlert()` handles alerts, while `expectConfirm()` and `expectPrompt()` expose the selected
-result through the page's JavaScript. If an expected dialog does not appear, or an unanticipated
-dialog appears, the action fails with an `IllegalStateException`. This remains true when
-`ignoreJavascriptErrors()` is enabled. The default Chrome and Firefox drivers leave prompts open for
-`WebTest` to handle; custom WebDriver suppliers should use the `unhandledPromptBehavior=ignore`
-capability as well.
-
-## Lightpanda CDP mode
-
-`Browser.LIGHTPANDA` is an explicit opt-in mode for connecting to an externally provisioned
-Lightpanda browser through its Chrome DevTools Protocol (CDP) endpoint:
-
-```java
-var webTest = new WebTest(
-        port,
-        WebTest.Browser.LIGHTPANDA,
-        URI.create("http://127.0.0.1:9222"));
-```
-
-Start Lightpanda separately, for example with `lightpanda serve --host 127.0.0.1 --port 9222`,
-and configure the endpoint for your test environment. Diglet does not download, install, launch,
-or stop the browser, and the HtmlUnit default is unchanged. The Lightpanda binary is AGPL-3.0
-licensed; users provisioning it are responsible for reviewing and meeting the license obligations
-applicable to their use.
-
-This mode executes modern JavaScript using Lightpanda's V8 runtime and supports CDP navigation,
-page HTML/text, JavaScript evaluation, asynchronous page updates, selector-based clicks and
-synthetic input events. It is a DOM/CDP browser mode, not a layout engine: it does not provide
-computed geometry, rendered-visibility or image-layout fidelity, and its input events are not
-hardware or trusted keyboard events. HTTP response status after browser navigation, cookie
-synchronization with Diglet's direct JDK HTTP client, and Diglet's JavaScript dialog expectation
-API are not available in this mode. Keep Chrome/Firefox tests for behavior that depends on those
-capabilities or real-browser layout.
-
-## Embedded Lightpanda mode
-
-`Browser.EMBEDDED_LIGHTPANDA` runs Lightpanda in-process through the Java FFM
-binding; it does not use the external CDP server required by
-`Browser.LIGHTPANDA`. The binding and native library are opt-in: Diglet keeps
-`lightpanda-java` out of its runtime dependencies because that binding and
-Lightpanda are AGPL-3.0. Add a compatible published binding version to the
-application test runtime and make the native shared library available through
-`-Dlightpanda.library=/path/to/liblightpanda.so` or `LIGHTPANDA_LIBRARY`.
-
-```kotlin
-dependencies {
-    testRuntimeOnly("io.github.rcgeorge23:lightpanda-java:<published-version>")
+class LoginTest {
+    @Test
+    void userCanLogIn() throws Exception {
+        try (WebTest web = new WebTest(8080)) {
+            web.navigateTo("/login")
+               .submitForm("loginForm", Map.of(
+                   "username", "alice",
+                   "password", "secret"))
+               .assertPageTextContains("Welcome, alice");
+        }
+    }
 }
 ```
 
-The version must include the session pump and console diagnostics APIs:
-`Session.pump()`, `Session.drainConsoleMessages()` and
-`Session.installJavascriptErrorCapture()`. Calls into the native library are
-serialized on one JVM-wide owner thread; each `WebTest` gets an isolated
-session. `waitFor` pumps Lightpanda between DOM polls.
+Replace the port, path, form ID, and expected text with those used by your app. `WebTest` is `AutoCloseable`: prefer try-with-resources, particularly for Selenium or Lightpanda backends.
 
-Embedded mode collects `console.error` output and installs a page-level listener
-that forwards uncaught errors and unhandled promise rejections to the same
-`javascriptErrors()` collection used by HtmlUnit and CDP modes. By default a
-collected error fails the test; call `ignoreJavascriptErrors()` to continue while
-keeping the diagnostics queryable. The listener is installed after navigation,
-so it cannot observe errors raised during the initial page load and does not see
-errors inside iframes or workers. Embedded mode also does not provide
-geometry/layout, browser navigation response status, or dialog parity; retain
-CDP/Chrome/Firefox tests for behavior that needs those capabilities.
+### 3. Try it without an application
 
-The native integration test is opt-in and does not run as part of `test`,
-`check`, or `build`. On Linux x86_64, install Zig 0.16.0 and Rust, then build
-the pinned upstream C API and run the test:
+This complete JUnit test starts an ephemeral HTTP server, exercises a real HTTP response, checks the DOM, and shuts the server down. It requires no database or separate web server:
+
+```java
+import com.sun.net.httpserver.HttpServer;
+import io.github.rcgeorge23.diglet.WebTest;
+import org.junit.jupiter.api.Test;
+import org.springframework.http.HttpStatus;
+
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+
+class DigletSmokeTest {
+    @Test
+    void rendersPageFromLocalServer() throws Exception {
+        HttpServer server = HttpServer.create(
+                new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/", exchange -> {
+            byte[] html = """
+                    <!doctype html>
+                    <html><head><title>Example</title></head>
+                    <body><main>Hello from Diglet</main></body></html>
+                    """.getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "text/html; charset=UTF-8");
+            exchange.sendResponseHeaders(200, html.length);
+            try (var output = exchange.getResponseBody()) {
+                output.write(html);
+            }
+        });
+        server.start();
+
+        try (WebTest web = new WebTest(server.getAddress().getPort())) {
+            web.navigateTo("/")
+               .assertStatusIs(HttpStatus.OK)
+               .assertThatPageTitleIs("Example")
+               .assertPageTextContains("Hello from Diglet");
+
+            assertEquals("Example",
+                    web.evaluateScript("document.title").asString());
+        } finally {
+            server.stop(0);
+        }
+    }
+}
+```
+
+See [`WebTestIntegrationTest`](src/test/java/io/github/rcgeorge23/diglet/WebTestIntegrationTest.java) for further runnable server-backed examples.
+
+## Common recipes
+
+### Forms, client-side events, and asynchronous updates
+
+```java
+try (WebTest web = new WebTest(8080)) {
+    web.navigateTo("/profile")
+       .setInputValue("#displayName", "Ada")
+       .click("#save")
+       .waitFor(page -> page.selectFirst("#notification") != null)
+       .assertPageTextContains("Profile saved");
+}
+```
+
+`setInputValue` updates an input and fires its `input` event. Use `typeInto` when the page requires keyboard and commit events. `submitForm("profileForm", Map.of(...))` fires the form submit event and honours browser constraint validation. To test server-side validation that a browser would normally prevent, use `forceSubmitForm` (or the CSS-selector equivalents).
+
+`waitFor` polls the parsed DOM while asynchronous UI work progresses. For example, use `waitFor(page -> page.selectFirst("#result") != null)` after a JavaScript-driven fetch.
+
+### HTTP requests and status assertions
+
+```java
+import org.springframework.http.HttpStatus;
+
+try (WebTest web = new WebTest(8080)) {
+    web.postJson("/api/notes", Map.of("text", "Buy milk"))
+       .assertStatusIs(HttpStatus.OK);
+
+    String responseBody = web.body(); // Raw response; parse JSON with your preferred library
+}
+```
+
+`postForm` sends form-encoded data. `status()` returns the numeric status for responses where status information is available; `assertRedirectIs`, `assertRedirectEndsWith` and `followRedirect` cover explicit HTTP redirect flows.
+
+### JavaScript, document inspection, and dialogs
+
+```java
+try (WebTest web = new WebTest(8080)) {
+    web.navigateTo("/calculator")
+       .executeScript("document.querySelector('#value').textContent = '42'");
+
+    int result = web.evaluateScript(
+            "Number(document.querySelector('#value').textContent)").asInt();
+
+    var heading = web.document().selectFirst("h1"); // jsoup Document
+}
+```
+
+`evaluateScript` returns `JsValue` with engine-independent accessors (for example `asString()`, `asInt()`, `asBoolean()`, and `asObject()`). Plain JavaScript arrays and objects are converted to Java lists and maps. Do not return DOM nodes or functions; use `document()` to inspect the HTML instead.
+
+Declare a JavaScript dialog expectation **before** the click that opens it:
+
+```java
+try (WebTest web = new WebTest(8080)) {
+    web.navigateTo("/settings");
+
+    var confirmation = web.expectConfirm().dismiss();
+    web.click("#delete");
+    assertEquals("Delete this entry?", confirmation.getText());
+
+    var prompt = web.expectPrompt().sendKeys("Ada");
+    web.click("#rename");
+    assertEquals("New name?", prompt.getText());
+}
+```
+
+The example assumes the page has matching buttons and dialog messages. Also available: `expectAlert()`, `expectConfirm().accept()`, and `expectPrompt().dismiss()`. Unexpected or missing dialogs cause a test failure.
+
+## Choosing a browser backend
+
+| Mode | When to use it | Extra setup |
+| --- | --- | --- |
+| `Browser.HTML_UNIT` (**default**) | Fast server-rendered UI, HTTP, cookies, forms and supported JavaScript | None |
+| `Browser.CHROME` / `Browser.FIREFOX` | Layout, computed styles, richer JavaScript, genuine browser interactions | Compatible browser/driver via Selenium |
+| `Browser.LIGHTPANDA` | Modern JavaScript against an existing Lightpanda CDP service | Run and supply a CDP endpoint |
+| `Browser.EMBEDDED_LIGHTPANDA` | In-process Lightpanda via the native embedding ABI | Add separate Java binding and compatible native shared library |
+
+Switch engines without rewriting the test:
+
+```java
+import io.github.rcgeorge23.diglet.WebTest;
+import io.github.rcgeorge23.diglet.WebTest.Browser;
+
+try (WebTest web = new WebTest(8080, Browser.HTML_UNIT)) {
+    web.navigateTo("/search")
+       .assertThatPageTitleIs("Search");
+}
+
+// For a selected real-browser test (Chrome must be available):
+try (WebTest web = new WebTest(8080, Browser.CHROME)) {
+    web.navigateTo("/search")
+       .assertThatPageTitleIs("Search");
+}
+```
+
+A JUnit 5 parameterised test can run the same flow in both modes:
+
+```java
+static java.util.stream.Stream<WebTest.Browser> browsers() {
+    return java.util.stream.Stream.of(
+            WebTest.Browser.HTML_UNIT, WebTest.Browser.CHROME);
+}
+
+@org.junit.jupiter.params.ParameterizedTest
+@org.junit.jupiter.params.provider.MethodSource("browsers")
+void searchPageLoadsInBothEngines(WebTest.Browser browser) throws Exception {
+    try (WebTest web = new WebTest(8080, browser)) {
+        web.navigateTo("/search")
+           .assertPageTextContains("Search");
+    }
+}
+```
+
+Add `junit-jupiter-params` to your test dependencies if it is not already provided by your test framework. A full example using a custom WebDriver supplier is in [`WebTestDriverAgnosticTest`](src/test/java/io/github/rcgeorge23/diglet/WebTestDriverAgnosticTest.java).
+
+**Important differences:** after Selenium/Lightpanda browser navigation, Diglet does not always have an HTTP response status. Prefer page content, URL and title assertions when testing across backends. HtmlUnit does not expose a newly opened `target="_blank"` window for selection. Use Chrome/Firefox for flows requiring that behaviour.
+
+### Reuse a Selenium browser process
+
+`WebDriverPool` lets multiple tests share a browser process instead of launching Chrome repeatedly:
+
+```java
+import io.github.rcgeorge23.diglet.WebDriverPool;
+import io.github.rcgeorge23.diglet.WebTest;
+import org.openqa.selenium.chrome.ChromeDriver;
+
+try (WebDriverPool pool = new WebDriverPool(ChromeDriver::new)) {
+    try (WebTest first = new WebTest(
+            8080, false, WebTest.Browser.CHROME, pool)) {
+        first.navigateTo("/").assertPageTextContains("Home");
+    }
+    pool.reset(); // Clear cookies and web storage before the next test
+    try (WebTest second = new WebTest(
+            8080, false, WebTest.Browser.CHROME, pool)) {
+        second.navigateTo("/").assertPageTextContains("Home");
+    }
+}
+```
+
+Manage the pool's lifecycle in your own test framework. Diglet also provides `ChromeDriverFactory` and `SeleniumWebDriverTestSupport` in [`io.github.rcgeorge23.diglet.selenium`](src/main/java/io/github/rcgeorge23/diglet/selenium) for optional headless Chrome test helpers. These helpers do not install a JUnit or Spring lifecycle.
+
+### External Lightpanda (CDP)
+
+Provision and start Lightpanda yourself (for example `lightpanda serve --host 127.0.0.1 --port 9222`), then connect:
+
+```java
+import java.net.URI;
+import io.github.rcgeorge23.diglet.WebTest;
+
+try (WebTest web = new WebTest(
+        8080,
+        WebTest.Browser.LIGHTPANDA,
+        URI.create("http://127.0.0.1:9222"))) {
+    web.navigateTo("/").assertPageTextContains("Welcome");
+}
+```
+
+This backend is DOM-oriented, **not** a layout-fidelity replacement for Chrome. Diglet does not download, launch or stop Lightpanda. Browser status codes, dialog expectations, and cookie synchronisation with Diglet's direct HTTP client are not available in this mode. Review Lightpanda's AGPL-3.0 licence before provisioning it.
+
+### Embedded Lightpanda (experimental)
+
+`Browser.EMBEDDED_LIGHTPANDA` uses the separate [lightpanda-java](https://github.com/rcgeorge23/lightpanda-java) FFM binding and a compatible native `liblightpanda.so` instead of CDP. Diglet intentionally **does not** include this AGPL-licensed binding as a runtime dependency.
+
+```kotlin
+dependencies {
+    testRuntimeOnly("io.github.rcgeorge23:lightpanda-java:REPLACE_WITH_PUBLISHED_VERSION")
+}
+tasks.test {
+    jvmArgs("--enable-native-access=ALL-UNNAMED")
+    systemProperty("lightpanda.library", "/absolute/path/to/liblightpanda.so")
+}
+```
+
+The selected binding version must provide `Session.pump()`, `Session.drainConsoleMessages()` and `Session.installJavascriptErrorCapture()`. The embedded engine serialises native calls on a JVM-wide owner thread. Its JavaScript error capture begins **after** navigation, so initial page-load, iframe and worker errors can be missed. Neither layout fidelity nor navigation response status is available.
+
+See the [binding README](https://github.com/rcgeorge23/lightpanda-java#readme) for native build instructions and ABI limitations. To exercise the project's opt-in native integration tests on Linux x86_64 (Zig 0.16.0 and Rust required):
 
 ```sh
 ./gradle/build-lightpanda-c-api.sh
@@ -200,170 +325,27 @@ the pinned upstream C API and run the test:
   -PlightpandaLibrary="$HOME/.cache/diglet/lightpanda-c-api/zig-out/lib/liblightpanda.so"
 ```
 
-The helper pins upstream PR #3096 at
-`bbcc2f795d23d891dbbcd84f48773ea9be07fb63` and builds with `ReleaseFast`.
-The default Debug build requires static TLS and cannot be loaded into an
-already-running JVM on Linux; the ReleaseFast library has been verified to
-late-load without `LD_PRELOAD`. Current end-to-end verification covers Linux
-x86_64 with JDK 25. The upstream C API is still a draft, so pin changes and
-additional platforms require separate validation.
+These tests do **not** run as part of the default build.
 
-## Selenium WebDriver test support
+## JavaScript compatibility and diagnostics
 
-Diglet also provides optional, lifecycle-free Selenium helpers in
-`io.github.rcgeorge23.diglet.selenium`. This package is useful when a test needs
-real Chrome behavior, such as layout, computed styles, trusted keyboard input,
-or browser functionality outside HtmlUnit's model. The default
-`WebTest` browser remains `Browser.HTML_UNIT`.
+HtmlUnit supports many common web features, including `fetch`, DOM events, and Diglet shims for `queueMicrotask`, `structuredClone`, `ResizeObserver`, `requestIdleCallback` and other APIs. It is not a full modern browser. Diglet diagnoses unsupported syntax such as JavaScript classes, `async`/`await`, and module scripts, and recommends a real browser when necessary. The detection is deliberately not a complete JavaScript parser.
 
-Create and close the driver in the consuming test framework; Diglet does not
-own the driver or add JUnit/Spring lifecycle integration:
+By default script failures, failed resources, and `console.error` can fail a test. Call `ignoreJavascriptErrors()` to continue while retaining diagnostic messages in `javascriptErrors()`; it does not make unsupported JavaScript execute. Use `withJavaScriptEnabled(false)` for tests which intentionally exercise only server-rendered HTML.
 
-```java
-WebDriver driver = ChromeDriverFactory.createChromeDriver();
-try {
-    SeleniumWebDriverTestSupport browser = new SeleniumWebDriverTestSupport(driver);
-    browser.open("http://localhost:8080/form");
-    browser.typeInto(By.id("name"), "Ada");
-    browser.click(By.id("save"));
-} finally {
-    driver.quit();
-}
+## Contributing and running the project
+
+```sh
+git clone https://github.com/rcgeorge23/diglet.git
+cd diglet
+./gradlew build             # Unit/integration tests with local HTTP fixtures
+./gradlew seleniumTest      # Optional Chrome tests (requires Chrome/driver)
 ```
 
-`SeleniumWebDriverTestSupport` can also receive a caller-configured
-`WebDriverWait`. Its helpers cover document readiness, Bootstrap-style modal
-visibility, visible/stale-safe clicks, prioritized clicks, native
-Ctrl+A/`sendKeys` input, checkbox/radio change events, and script execution.
-`ChromeDriverFactory` supplies headless defaults and discovers Chrome and
-ChromeDriver from Selenium system properties, `CHROME_BINARY`, `CHROME_BIN`,
-`CHROMEDRIVER_PATH`, `CHROMEWEBDRIVER`, or executables on `PATH`.
+The standard build requires no running external application. The native Lightpanda integration task is opt-in as described above.
 
-Chrome-specific local-fixture tests are kept in the opt-in `seleniumTest` task:
-
-```shell
-./gradlew seleniumTest
-```
-
-The regular `test`, `check`, and `build` tasks do not require Chrome. CI and
-release validation invoke `seleniumTest` explicitly. Selenium Java is already
-an API dependency of Diglet; these helpers do not add JUnit or Spring to the
-library.
-
-## Typical usage
-
-Create an instance pointing at the local server under test and chain actions and assertions:
-
-```java
-int port = 8080;
-new WebTest(port)
-        .navigateTo("/login")
-        .submitForm("loginForm", Map.of("username", "alice", "password", "secret"))
-        .followRedirect()
-        .assertStatusIs(HttpStatus.OK)
-        .assertPageBodyContains("Welcome, alice");
-```
-
-Clicking a link and executing JavaScript is just as straightforward:
-
-```java
-new WebTest(port)
-        .navigateTo("/page1")
-        .click("#next")
-        .executeScript("highlight()")
-        .assertPageBodyContains("Step 2 highlighted");
-```
-
-Refer to [`WebTestIntegrationTest`](src/test/java/io/github/rcgeorge23/diglet/WebTestIntegrationTest.java)
-for more examples.
-
-## Running the same flow in more than one browser
-
-Write the flow once and parameterise the browser, so it can run in the fast in-process
-`Browser.HTML_UNIT` mode on every commit and in a real browser (for example headless Chrome) on a
-schedule:
-
-```java
-static Stream<Browser> browsers() {
-    return Stream.of(Browser.HTML_UNIT, Browser.CHROME);
-}
-
-@ParameterizedTest
-@MethodSource("browsers")
-void userCanLogIn(Browser browser) throws Exception {
-    try (WebTest webTest = new WebTest(port, false, browser)) {
-        webTest.navigateTo("/login")
-                .submitForm("loginForm", Map.of("username", "alice", "password", "secret"))
-                .assertPageBodyContains("Welcome, alice");
-    }
-}
-```
-
-A custom `Supplier<WebDriver>` can be supplied for non-default drivers, and `WebDriverPool` reuses
-one browser process across tests.
-
-After clicking a `target="_blank"` link in HTML_UNIT mode, `WebTest` stays on the original window;
-the opened window is not exposed for selection. HTTP status is available for HtmlUnit pages and
-direct HTTP responses, but not after WebDriver navigation. Prefer assertions on page content and URLs
-for flows that must pass in both modes. See the diglet test suite (`WebTestDriverAgnosticTest`) for a
-worked example.
-
-## Running the same flow in more than one browser
-
-`WebTest` is driver-agnostic: the same test body can run in the fast in-process `HTML_UNIT` engine
-and in a real browser, so browser coverage can be a small scheduled subset instead of duplicated
-test code. Parameterise the test by mode and construct the `WebTest` accordingly:
-
-```java
-static Stream<String> modes() {
-    return Stream.of("html-unit", "chrome");
-}
-
-@ParameterizedTest
-@MethodSource("modes")
-void theSameFlowRunsInBothModes(String mode) {
-    WebTest webTest = "chrome".equals(mode)
-            ? new WebTest(port, false, WebTest.Browser.CHROME) // or a custom WebDriver supplier
-            : new WebTest(port, false, WebTest.Browser.HTML_UNIT);
-    try {
-        webTest.navigateTo("/form")
-                .assertThatPageTitleIs("Form Page")
-                .setInputValue("#q", "hello")
-                .click("#go")
-                .assertPageBodyContains("q=hello");
-    } finally {
-        webTest.close();
-    }
-}
-```
-
-Assertions that behave identically in both modes are content-based (`assertPageBodyContains`,
-`assertPageTextContains`), URL-based (`assertCurrentUrlIs`), title-based, and `evaluateScript`
-results. HtmlUnit keeps the original window after a `target="_blank"` click but does not expose the
-new window for selection; use WebDriver for flows that need to interact with the opened window. HTTP
-status is unavailable after WebDriver navigation. For long-running browser suites, share one browser
-process across tests with `WebDriverPool`.
-
-## Building and testing
-
-```bash
-./gradlew build
-```
-
-The test suite spins up local HTTP servers, exercises the HtmlUnit browser, JavaScript polyfills and
-form handling, and requires no external configuration.
-
-## Releasing
-
-Releases are published to Maven Central through the Sonatype Central Portal. To cut a release, tag
-the commit with a `v`-prefixed version (for example `v0.1.0`) and push the tag; the release workflow
-runs the build and uploads the signed artifacts. The `version` defaults to the value in
-`gradle.properties` and is overridden by the tag name during the release. The workflow can also be
-started manually with an explicit version.
-
-Publishing requires the repository secrets `MAVEN_CENTRAL_USERNAME`, `MAVEN_CENTRAL_PASSWORD`,
-`MAVEN_SIGNING_KEY` and `MAVEN_SIGNING_PASSWORD`.
+Issues and contributions: [GitHub issues](https://github.com/rcgeorge23/diglet/issues). Releases are published through Maven Central from version tags; repository maintainers use the [release workflow](.github/workflows/release.yml).
 
 ## Licence
 
-Diglet is licensed under the [Apache License, Version 2.0](LICENSE).
+[Apache License, Version 2.0](LICENSE). Optional Lightpanda components have separate AGPL-3.0 licensing considerations.
